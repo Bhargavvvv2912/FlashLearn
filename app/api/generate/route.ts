@@ -3,66 +3,138 @@ import { NextResponse } from "next/server";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
+function extractJsonObject(text: string) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}') + 1;
+  if (start === -1 || end === 0) throw new Error('No JSON object found in model output');
+  return cleaned.substring(start, end);
+}
+
+function extractJsonArray(text: string) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']') + 1;
+  if (start === -1 || end === 0) throw new Error('No JSON array found in model output');
+  return cleaned.substring(start, end);
+}
+
+function safeJsonParse(jsonText: string) {
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    const sanitized = jsonText
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/\n/g, '\\n')
+      .replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+    return JSON.parse(sanitized);
+  }
+}
+
 export async function POST(req: Request) {
   try {
-    const { topic, about, persona, difficulty, action, currentContent, context } = await req.json();
+    const { topic, about, persona, difficulty, action, currentContent, context, weakCards } = await req.json();
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    // --- CASE 1: DRILL & SIMPLIFY ---
-    if (action === 'drill' || action === 'simplify') {
+    if (action === 'drill' || action === 'simplify' || action === 'example') {
+      let task = '';
+      if (action === 'drill') task = 'Give a deeper technical explanation. Max 5 bullet points, no fluff.';
+      if (action === 'simplify') task = 'Simplify with a cleaner analogy. Max 2 sentences.';
+      if (action === 'example') task = 'Give ONE concrete, vivid real-world example of this concept that anyone can picture. No jargon. Max 3 sentences. Start with "For example," or "Think of it like..."';
+
       const refinePrompt = `
-        Persona: ${persona}. Background: ${about}. Context: ${context || 'None'}
-        Current Content: "${currentContent}"
-        Task: ${action === 'drill' ? 'Technical deep-dive.' : 'Simplify analogy.'}
-        
-        STRICT LIMIT: Maximum 4-5 lines of text. Use clear bullet points if helpful.
-        Return ONLY a JSON object: {"newContent": "..."}
-      `;
+Persona: ${persona}. Background: ${about}. Context: ${context || 'None'}
+Current Content: "${currentContent}"
+Task: ${task}
+
+Return ONLY a JSON object: {"newContent": "..."}
+`;
       const result = await model.generateContent(refinePrompt);
       const text = result.response.text();
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}') + 1;
-      return NextResponse.json(JSON.parse(text.substring(start, end)));
+      const parsed = safeJsonParse(extractJsonObject(text));
+      return NextResponse.json(parsed);
+
+    } else if (action === 'regenerate_weak') {
+      const weakList = (weakCards || []).map((c: { id: number; title: string; content: string }) =>
+        `Card ${c.id}: "${c.title}"\nOriginal explanation: ${c.content}`
+      ).join('\n\n');
+
+      const regenPrompt = `
+The learner did NOT understand the following concepts. You must re-explain them using a COMPLETELY DIFFERENT approach.
+
+STRICT RULES:
+- DO NOT repeat any phrasing, analogies, or examples from the original explanation
+- Use a brand new metaphor or real-world scenario they have never seen
+- Start from a more basic entry point — assume they know nothing about this specific concept
+- Be more concrete and visual
+- Maximum 3 sentences for content, 2 sentences for simpler, 5 lines for detailed
+
+Background: ${about || 'General curious learner'}. Persona: ${persona}. Context: ${context || 'None'}.
+
+${weakList}
+
+Return ONLY a raw JSON array:
+[
+  {
+    "id": <same id as input>,
+    "hook": "A new fascinating angle on this concept...",
+    "content": "Fresh explanation from scratch...",
+    "simpler": "Brand new analogy...",
+    "detailed": "Different technical framing...",
+    "visual": "New ASCII/table/code..."
+  }
+]
+`;
+      const result = await model.generateContent(regenPrompt);
+      const text = result.response.text();
+      const parsed = safeJsonParse(extractJsonArray(text));
+      return NextResponse.json({ regenerated: parsed });
+
+    } else {
+      const systemPrompt = `
+System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
+Task: Break down "${topic}" into 7 cards.
+
+STRICT CONSTRAINTS:
+- "hook": One sentence — why this topic is fascinating or surprising. Must spark curiosity.
+- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations — save those for detailed. Start with something concrete or surprising, not a definition.
+- "simpler": One punchy, clear analogy (max 2 sentences).
+- "detailed": Maximum 5 lines of technical explanation. Use bullet points. Equations are welcome here.
+- "visual": A simple ASCII diagram, table, or short code snippet (max 6 lines).
+- Difficulty: ${difficulty}. Context: ${context || 'None'}
+
+IMPORTANT:
+- Escape backslashes properly.
+- Do not include raw LaTeX with single backslashes unless escaped for JSON.
+- Return ONLY valid JSON.
+
+{
+  "topic_summary": "1-sentence overview",
+  "cards": [
+    {
+      "id": 1,
+      "title": "Short Header",
+      "hook": "Why this is fascinating...",
+      "content": "Curious-friend explanation here...",
+      "simpler": "Analogy here...",
+      "detailed": "Technical details + equations here...",
+      "visual": "ASCII / table / code here..."
+    }
+  ]
+}
+`;
+      const result = await model.generateContent(systemPrompt);
+      const text = result.response.text();
+      const parsed = safeJsonParse(extractJsonObject(text));
+      return NextResponse.json(parsed);
     }
 
-    // --- CASE 2: INITIAL 7-CARD PATH ---
-    const systemPrompt = `
-      System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
-      Task: Break down "${topic}" into 7 cards.
-      
-      STRICT CONSTRAINTS FOR SCANNABILITY:
-      - "content": Exactly 3 sentences. No more.
-      - "simpler": One punchy, clear analogy (max 2 sentences).
-      - "detailed": Maximum 5 lines of technical explanation. Use bullet points.
-      - Difficulty: ${difficulty}. Context: ${context || 'None'}
-
-      Return ONLY a raw JSON object. No markdown formatting.
-      JSON Structure:
-      {
-        "topic_summary": "1-sentence overview",
-        "cards": [
-          {
-            "id": 1,
-            "title": "Short Header",
-            "content": "Core logic here...",
-            "simpler": "Analogy here...",
-            "detailed": "Technical details here...",
-            "visual": "ASCII/Table"
-          }
-        ]
-      }
-    `;
-
-    const result = await model.generateContent(systemPrompt);
-    const responseText = result.response.text();
-
-    const jsonStart = responseText.indexOf('{');
-    const jsonEnd = responseText.lastIndexOf('}') + 1;
-    const cleanJson = responseText.substring(jsonStart, jsonEnd);
-
-    return NextResponse.json(JSON.parse(cleanJson));
   } catch (e: any) {
     console.error("Gemini API Error:", e);
-    return NextResponse.json({ error: e.message || "Failed to generate content" }, { status: 500 });
+    return NextResponse.json(
+      { error: e.message || "Failed to generate content" },
+      { status: 500 }
+    );
   }
 }

@@ -1,329 +1,717 @@
 'use client';
 import { useState } from 'react';
-import { ChevronRight, ChevronLeft, Zap, Info, HelpCircle, GraduationCap, User, Settings2, Map as MapIcon, LayoutList, BrainCircuit, Activity, Sparkles, RefreshCcw, MessageSquare, Plus, Minus } from 'lucide-react';
+import {
+  ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
+  LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
+  Plus, Minus, Terminal, Lightbulb, GitBranch
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { motion, AnimatePresence } from 'framer-motion';
+
+interface Card {
+  id: number;
+  title: string;
+  hook: string;
+  content: string | string[];
+  simpler: string | string[];
+  detailed: string | string[];
+  visual: string | string[];
+}
+
+interface FlashData {
+  topic_summary: string;
+  cards: Card[];
+}
+
+type ViewMode = 'cards' | 'map' | 'tree';
+type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
+
+const PERSONA_CHIPS = [
+  { label: '👶 Simple', value: 'Explain like I am 12 years old with no technical background', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+  { label: '🎓 Student', value: 'Student', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+  { label: '🔬 Expert', value: 'Researcher', color: 'bg-green-50 text-green-700 border-green-200' },
+  { label: '🧑‍💼 Pro', value: 'Industry Expert', color: 'bg-orange-50 text-orange-700 border-orange-200' },
+];
 
 export default function Home() {
-  // --- FORM STATE ---
   const [topic, setTopic] = useState('');
   const [about, setAbout] = useState('');
   const [persona, setPersona] = useState('Student');
   const [customPersona, setCustomPersona] = useState('');
   const [difficulty, setDifficulty] = useState('Medium');
   const [context, setContext] = useState('');
-  
-  // UI Toggles
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [useCustomPersona, setUseCustomPersona] = useState(false);
 
-  // --- APP STATE ---
-  const [data, setData] = useState<{topic_summary: string, cards: any[]} | null>(null);
+  const [data, setData] = useState<FlashData | null>(null);
   const [index, setIndex] = useState(0);
-  const [view, setView] = useState<'normal' | 'simpler' | 'detailed'>('normal');
-  const [isMapView, setIsMapView] = useState(false);
+  const [view, setView] = useState<'normal' | 'simpler' | 'detailed' | 'visual'>('normal');
+  const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [refinement, setRefinement] = useState<string | null>(null);
   const [isRefining, setIsRefining] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [showHook, setShowHook] = useState(true);
+  const [refinementCache, setRefinementCache] = useState<Record<string, string>>({});
 
-  // Logic to determine which persona string to send to the API
-  const getActivePersona = () => (persona === 'Custom Instruction' ? customPersona : persona);
+  // tree state
+  const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
+  const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
+
+  const getActivePersona = () => useCustomPersona ? customPersona : persona;
+  const CARD_COUNT = data?.cards?.length ?? 7;
+  const currentCard = data?.cards?.[index] || null;
+
+  const asText = (value: unknown) =>
+    Array.isArray(value) ? value.join('\n') : String(value ?? '');
+
+  const ErrorBanner = () => error ? (
+    <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+      <Info className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+      <div className="flex-1">
+        <p className="text-sm font-semibold text-red-700">Something went wrong</p>
+        <p className="text-sm text-red-600 mt-0.5">{error}</p>
+      </div>
+      <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-xs font-bold shrink-0">✕</button>
+    </div>
+  ) : null;
 
   const generateCards = async () => {
+    if (!topic.trim()) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          topic, 
-          about, 
-          persona: getActivePersona(), 
-          difficulty, 
-          context 
-        }),
+        body: JSON.stringify({ topic, about, persona: getActivePersona(), difficulty, context }),
       });
       const result = await res.json();
-      if (result.error) alert("AI Error: " + result.error);
-      else { setData(result); setIndex(0); setRefinement(null); }
-    } catch (e) { console.error(e); }
+      if (result.error) {
+        setError(`AI Error: ${result.error}`);
+      } else {
+        setData(result);
+        setIndex(0);
+        setRefinement(null);
+        setRefinementCache({});
+        setShowHook(true);
+        setViewMode('cards');
+        setView('normal');
+        setTreeFocusCardIndex(null);
+        setTreeSelectedBranch(null);
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Failed to connect to AI. Please check your connection and try again.');
+    }
     setLoading(false);
   };
 
-  const handleRefine = async (action: 'drill' | 'simplify') => {
+  const handleRefine = async (action: 'drill' | 'simplify' | 'example') => {
     if (!data) return;
+
+    const cacheKey = `${index}:${action}`;
+    if (refinementCache[cacheKey]) {
+      setRefinement(refinementCache[cacheKey]);
+      return;
+    }
+
     setIsRefining(true);
-    const currentText = view === 'normal' ? data.cards[index].content : 
-                        view === 'simpler' ? data.cards[index].simpler : 
-                        data.cards[index].detailed;
+    setError(null);
+
+    const currentText =
+      view === 'normal'   ? asText(data.cards[index].content)  :
+      view === 'simpler'  ? asText(data.cards[index].simpler)  :
+      view === 'detailed' ? asText(data.cards[index].detailed) :
+                            asText(data.cards[index].visual);
+
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action, 
-          currentContent: currentText, 
-          about, 
+        body: JSON.stringify({
+          action,
+          currentContent: currentText,
+          about,
           persona: getActivePersona(),
-          context
+          context,
         }),
       });
+
       const result = await res.json();
-      setRefinement(result.newContent);
-    } catch (e) { console.error(e); }
+
+      if (result.error) {
+        setError(`Refinement failed: ${result.error}`);
+      } else {
+        setRefinement(result.newContent);
+        setRefinementCache((prev) => ({
+          ...prev,
+          [cacheKey]: result.newContent,
+        }));
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Refinement failed. Please try again.');
+    }
+
     setIsRefining(false);
   };
 
-  const resetNavigation = (newIndex: number) => {
-    setIndex(newIndex);
-    setRefinement(null);
-    setView('normal');
+  const handleRegenerateCard = async () => {
+    if (!data) return;
+    setIsRegenerating(true);
+    setError(null);
+
+    const card = data.cards[index];
+
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'regenerate_weak',
+          weakCards: [{ id: card.id, title: asText(card.title), content: asText(card.content) }],
+          about,
+          persona: getActivePersona(),
+          context,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (result.error) {
+        setError(`Regeneration failed: ${result.error}`);
+      } else {
+        const regen = result.regenerated?.[0];
+        if (regen) {
+          const updatedCards = data.cards.map((c, i) => i === index ? { ...c, ...regen } : c);
+          setData({ ...data, cards: updatedCards });
+          setRefinement(null);
+          setShowHook(true);
+
+          setRefinementCache((prev) => {
+            const next = { ...prev };
+            delete next[`${index}:simplify`];
+            delete next[`${index}:example`];
+            delete next[`${index}:drill`];
+            return next;
+          });
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Regeneration failed. Please try again.');
+    }
+
+    setIsRegenerating(false);
   };
 
-  // --- DEFINE CURRENT CARD EARLY TO AVOID REFERENCE ERROR ---
-  const currentCard = data?.cards?.[index] || null;
+  const resetNavigation = (newIndex: number, newView?: 'normal' | 'simpler' | 'detailed' | 'visual') => {
+    setIndex(newIndex);
+    setRefinement(null);
+    setView(newView || 'normal');
+    setShowHook(true);
+  };
 
-  // --- INITIAL SETUP VIEW ---
+  const getTreeBranchContent = () => {
+    if (!data || treeFocusCardIndex === null || treeSelectedBranch === null) return '';
+    const card = data.cards[treeFocusCardIndex];
+    if (treeSelectedBranch === 'normal') return asText(card.content);
+    if (treeSelectedBranch === 'simpler') return asText(card.simpler);
+    if (treeSelectedBranch === 'detailed') return asText(card.detailed);
+    if (treeSelectedBranch === 'visual') return asText(card.visual);
+    return '';
+  };
+
+  // SETUP VIEW
   if (!data && !loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-slate-900">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl w-full bg-white p-10 rounded-3xl shadow-xl border border-slate-200">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="bg-indigo-600 p-2 rounded-lg"><Zap className="text-white" /></div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">FlashLearn Pro</h1>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-8 space-y-6">
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Zap className="w-6 h-6 text-indigo-600" />
+              <h1 className="text-2xl font-black text-slate-800">FlashLearnHAI</h1>
+            </div>
+            <p className="text-slate-500 text-sm">Understand any topic — without the information overload</p>
           </div>
-          
-          <div className="space-y-6">
-            {/* Background / Resume Field */}
-            <div>
-              <label className="flex items-center gap-2 font-bold text-xs text-slate-500 mb-2 uppercase tracking-widest">
-                <User size={14}/> Your Background (Or Paste Resume)
-              </label>
-              <textarea 
-                className="w-full p-4 border-2 border-slate-100 rounded-2xl min-h-[150px] text-black font-medium focus:border-indigo-500 outline-none transition-all scrollbar-thin"
-                placeholder="Paste your CV, LinkedIn bio, or specific technical background here..."
-                value={about} onChange={(e) => setAbout(e.target.value)}
-              />
-            </div>
 
-            {/* Topic Field */}
-            <div>
-              <label className="flex items-center gap-2 font-bold text-xs text-slate-500 mb-2 uppercase tracking-widest">Topic to Master</label>
-              <input 
-                className="w-full p-4 border-2 border-slate-100 rounded-2xl text-black font-medium focus:border-indigo-500 outline-none transition-all"
-                placeholder="e.g. Backpropagation, Fluid Dynamics..."
-                value={topic} onChange={(e) => setTopic(e.target.value)}
-              />
-            </div>
+          <ErrorBanner />
 
-            {/* Main Selection Grid */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="font-bold text-xs text-slate-500 mb-2 uppercase block tracking-widest">Complexity</label>
-                <select className="w-full p-4 border-2 border-slate-100 rounded-2xl bg-white text-black font-medium focus:border-indigo-500 outline-none" value={difficulty} onChange={(e) => setDifficulty(e.target.value)}>
-                  <option>Beginner</option>
-                  <option>Medium</option>
-                  <option>Expert</option>
-                  <option>Post-Doc</option>
-                </select>
-              </div>
-              <div>
-                <label className="font-bold text-xs text-slate-500 mb-2 uppercase block tracking-widest">Persona</label>
-                <select className="w-full p-4 border-2 border-slate-100 rounded-2xl bg-white text-black font-medium focus:border-indigo-500 outline-none" value={persona} onChange={(e) => setPersona(e.target.value)}>
-                  <option>Student</option>
-                  <option>Feymann (Simple Analogies)</option>
-                  <option>Professor</option>
-                  <option>Researcher</option>
-                  <option>Industry Expert</option>
-                  <option>Custom Instruction</option>
-                </select>
-              </div>
-            </div>
+          <div>
+            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">What are you curious about?</label>
+            <input
+              type="text"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && topic.trim() && generateCards()}
+              placeholder="e.g. Fluid dynamics, Quantum entanglement, Black holes..."
+              className="w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </div>
 
-            {/* Advanced Toggle Section */}
-            <div className="pt-2">
-              <button 
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center gap-2 text-xs font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-800 transition-colors"
+          <div>
+            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Explain it like I am a...</label>
+            <div className="flex flex-wrap gap-2">
+              {PERSONA_CHIPS.map((chip) => (
+                <button
+                  key={chip.value}
+                  onClick={() => { setPersona(chip.value); setUseCustomPersona(false); }}
+                  className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all ${
+                    persona === chip.value && !useCustomPersona
+                      ? 'ring-2 ring-indigo-500 ring-offset-1 ' + chip.color
+                      : chip.color + ' opacity-60 hover:opacity-100'
+                  }`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+              <button
+                onClick={() => setUseCustomPersona(true)}
+                className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all bg-slate-50 text-slate-600 border-slate-200 ${
+                  useCustomPersona ? 'ring-2 ring-indigo-500 ring-offset-1 opacity-100' : 'opacity-60 hover:opacity-100'
+                }`}
               >
-                {showAdvanced ? <Minus size={14}/> : <Plus size={14}/>} 
-                {showAdvanced ? "Hide Optional Settings" : "Add Custom Persona & Context"}
+                ✏️ Custom
               </button>
-
-              <AnimatePresence>
-                {showAdvanced && (
-                  <motion.div 
-                    initial={{ height: 0, opacity: 0 }} 
-                    animate={{ height: 'auto', opacity: 1 }} 
-                    exit={{ height: 0, opacity: 0 }}
-                    className="overflow-hidden space-y-4 mt-4"
-                  >
-                    {persona === 'Custom Instruction' && (
-                      <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }}>
-                        <label className="flex items-center gap-2 font-bold text-xs text-slate-500 mb-2 uppercase tracking-widest">
-                          <Sparkles size={14}/> Custom Instruction
-                        </label>
-                        <input 
-                          className="w-full p-4 border-2 border-indigo-100 rounded-2xl text-black font-medium focus:border-indigo-500 outline-none shadow-sm shadow-indigo-50"
-                          placeholder="e.g. Explain like a pirate, or use only soccer metaphors..."
-                          value={customPersona} onChange={(e) => setCustomPersona(e.target.value)}
-                        />
-                      </motion.div>
-                    )}
-                    <div>
-                      <label className="flex items-center gap-2 font-bold text-xs text-slate-500 mb-2 uppercase tracking-widest">
-                        <MessageSquare size={14}/> Additional Context
-                      </label>
-                      <textarea 
-                        className="w-full p-4 border-2 border-slate-100 rounded-2xl h-24 text-black font-medium focus:border-indigo-500 outline-none shadow-inner"
-                        placeholder="e.g. Relate everything to my current project on Sparse Autoencoders..."
-                        value={context} onChange={(e) => setContext(e.target.value)}
-                      />
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
-
-            <button 
-              onClick={generateCards}
-              className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-lg hover:bg-indigo-700 shadow-lg transition-transform hover:-translate-y-1"
-            >
-              Initialize Learning Path
-            </button>
+            {useCustomPersona && (
+              <input
+                type="text"
+                value={customPersona}
+                onChange={(e) => setCustomPersona(e.target.value)}
+                placeholder="e.g. A nurse learning ML for healthcare"
+                className="mt-2 w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            )}
           </div>
-        </motion.div>
+
+          <div>
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-xs font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-800 transition-colors"
+            >
+              {showAdvanced ? <Minus className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+              {showAdvanced ? 'Hide Advanced Settings' : 'Advanced Settings'}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-4 space-y-4">
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Your Background (Optional)</label>
+                  <textarea
+                    value={about}
+                    onChange={(e) => setAbout(e.target.value)}
+                    placeholder="e.g. CS undergrad familiar with Python..."
+                    className="w-full h-20 p-3 rounded-xl border border-slate-200 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Complexity</label>
+                    <select
+                      value={difficulty}
+                      onChange={(e) => setDifficulty(e.target.value)}
+                      className="w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option>Beginner</option>
+                      <option>Medium</option>
+                      <option>Expert</option>
+                      <option>Post-Doc</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Persona (Manual)</label>
+                    <select
+                      value={persona}
+                      onChange={(e) => { setPersona(e.target.value); setUseCustomPersona(false); }}
+                      className="w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option>Student</option>
+                      <option>Feymann (Simple Analogies)</option>
+                      <option>Professor</option>
+                      <option>Researcher</option>
+                      <option>Industry Expert</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Additional Context</label>
+                  <textarea
+                    value={context}
+                    onChange={(e) => setContext(e.target.value)}
+                    placeholder="e.g. Focus on real-world applications, avoid heavy math"
+                    className="w-full h-20 p-3 rounded-xl border border-slate-200 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={generateCards}
+            disabled={!topic.trim()}
+            className="w-full py-4 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            Generate Learning Path →
+          </button>
+        </div>
       </div>
     );
   }
 
-  // --- LOADING VIEW ---
-  if (loading) return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
-      <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-indigo-600"></div>
-      <p className="font-bold text-slate-900 animate-pulse text-xl tracking-tight text-center">Constructing Learning Pathway...</p>
-    </div>
-  );
+  // LOADING VIEW
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto" />
+          <p className="text-slate-500 font-bold text-sm uppercase tracking-widest">Constructing Learning Pathway...</p>
+        </div>
+      </div>
+    );
+  }
 
-  // --- FINAL APP VIEW ---
+  // MAIN APP VIEW
   return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8 text-slate-900">
-      <div className="max-w-4xl mx-auto">
-        {/* Header Navigation */}
-        <div className="flex justify-between items-center mb-8">
-          <button onClick={() => setData(null)} className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors">
-            <ChevronLeft size={20}/> New Topic
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-2xl space-y-4">
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setData(null); setError(null); }} className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm">
+            <ChevronLeft className="w-4 h-4" /> New Topic
           </button>
-          <div className="flex bg-white p-1 rounded-xl shadow-sm border border-slate-200">
-            <button onClick={() => setIsMapView(false)} className={`px-4 py-2 rounded-lg font-bold text-sm transition ${!isMapView ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
-              <LayoutList size={16}/>
-            </button>
-            <button onClick={() => setIsMapView(true)} className={`px-4 py-2 rounded-lg font-bold text-sm transition ${isMapView ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
-              <MapIcon size={16}/>
-            </button>
+          <div className="flex gap-2">
+            <button onClick={() => setViewMode('cards')} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'cards' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}><LayoutList className="w-4 h-4" /></button>
+            <button onClick={() => setViewMode('map')} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'map' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}><MapIcon className="w-4 h-4" /></button>
+            <button onClick={() => { setViewMode('tree'); setTreeFocusCardIndex(null); setTreeSelectedBranch(null); }} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'tree' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`} title="Knowledge Tree"><GitBranch className="w-4 h-4" /></button>
           </div>
         </div>
 
-        {isMapView ? (
-          /* CONCEPT MAP VIEW */
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {data?.cards.map((card, i) => (
-              <div key={i} onClick={() => {resetNavigation(i); setIsMapView(false);}} className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all ${index === i ? 'border-indigo-600 shadow-lg' : 'border-slate-100 hover:border-indigo-200'}`}>
-                <span className="text-xs font-black text-indigo-500 uppercase">Step {i + 1}</span>
-                <h3 className="font-bold text-slate-900 mt-2">{card.title}</h3>
+        <ErrorBanner />
+
+        {/* TREE MODE */}
+        {viewMode === 'tree' && (
+          <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col">
+            <div className="shrink-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
+              <div>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Knowledge Tree</p>
+                <p className="text-sm font-bold text-slate-700">
+                  {treeFocusCardIndex === null
+                    ? asText(data?.topic_summary)
+                    : `Focused: ${asText(data?.cards[treeFocusCardIndex]?.title)}`
+                  }
+                </p>
               </div>
-            ))}
-          </div>
-        ) : (
-          /* INDIVIDUAL CARD VIEW */
-          <div className="flex flex-col items-center">
-            <h2 className="text-3xl font-black mb-8 text-center text-slate-950">{data?.topic_summary}</h2>
-            
-            <AnimatePresence mode="wait">
-              <motion.div key={index + view + (refinement ? 'ref' : 'orig')} initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -10, opacity: 0 }}
-                className="bg-white rounded-[2.5rem] shadow-2xl p-8 md:p-12 w-full max-w-2xl border border-slate-100 min-h-[620px] flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex justify-between items-start mb-8">
-                    <span className="bg-indigo-50 text-indigo-700 px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-widest">CARD {index + 1} / 7</span>
-                    <BrainCircuit className="text-indigo-100" size={40} />
+              <div className="flex gap-2">
+                {treeFocusCardIndex !== null && (
+                  <button
+                    onClick={() => { setTreeFocusCardIndex(null); setTreeSelectedBranch(null); }}
+                    className="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-300 transition-colors"
+                  >
+                    Back to Topic Tree
+                  </button>
+                )}
+                <button
+                  onClick={() => setViewMode('cards')}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-black uppercase tracking-widest hover:bg-indigo-700 transition-colors"
+                >
+                  Back to Cards
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto p-8">
+              {treeFocusCardIndex === null ? (
+                // TOPIC TREE
+                <div className="min-w-max min-h-full flex items-start justify-center">
+                  <div className="w-max">
+                    <div className="flex justify-center mb-3">
+                      <div className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-black shadow-lg max-w-md text-center">
+                        {asText(data?.topic_summary)}
+                      </div>
+                    </div>
+
+                    <div className="relative flex justify-center mb-3" style={{ height: '40px' }}>
+                      <svg width="100%" height="40" className="absolute inset-0" style={{ minWidth: `${Math.max((data?.cards.length || 1) * 180, 700)}px` }}>
+                        {data?.cards.map((_, i) => {
+                          const total = data.cards.length || 1;
+                          const cardWidth = 100 / total;
+                          const centerX = cardWidth * i + cardWidth / 2;
+                          return (
+                            <line key={i} x1="50%" y1="0" x2={`${centerX}%`} y2="40" stroke="#cbd5e1" strokeWidth="1.5" />
+                          );
+                        })}
+                        <circle cx="50%" cy="0" r="3" fill="#6366f1" />
+                      </svg>
+                    </div>
+
+                    <div className="flex gap-4 justify-center mb-3" style={{ minWidth: `${Math.max((data?.cards.length || 1) * 180, 700)}px` }}>
+                      {data?.cards.map((card, i) => (
+                        <button
+                          key={i}
+                          onClick={() => {
+                            setTreeFocusCardIndex(i);
+                            setTreeSelectedBranch('normal');
+                          }}
+                          className="w-[160px] min-w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md"
+                        >
+                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
+                            {i + 1}
+                          </div>
+                          <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">{asText(card.title)}</p>
+                        </button>
+                      ))}
+                    </div>
+
+                    <p className="text-center text-xs text-slate-400 mt-6">Click a flashcard node to expand its explanation tree</p>
+                  </div>
+                </div>
+              ) : (
+                // FOCUSED CARD TREE
+                <div className="w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-8 items-start">
+                  <div className="min-w-0">
+                    <div className="flex justify-center mb-4">
+                      <button
+                        onClick={() => setTreeSelectedBranch('normal')}
+                        className={`px-6 py-4 rounded-2xl border-2 text-left shadow-md max-w-md w-full transition-all ${
+                          treeSelectedBranch === 'normal'
+                            ? 'border-indigo-600 bg-indigo-50'
+                            : 'border-slate-300 bg-white hover:border-indigo-400'
+                        }`}
+                      >
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Root Flashcard</p>
+                        <p className="text-sm font-black text-slate-800 mt-1">{asText(data?.cards[treeFocusCardIndex]?.title)}</p>
+                      </button>
+                    </div>
+
+                    <div className="relative flex justify-center mb-4" style={{ height: '56px' }}>
+                      <svg width="420" height="56" className="absolute">
+                        <line x1="210" y1="0" x2="70" y2="56" stroke="#d1fae5" strokeWidth="1.5" />
+                        <line x1="210" y1="0" x2="210" y2="56" stroke="#e0e7ff" strokeWidth="1.5" />
+                        <line x1="210" y1="0" x2="350" y2="56" stroke="#fef3c7" strokeWidth="1.5" />
+                        <circle cx="210" cy="0" r="3" fill="#6366f1" />
+                      </svg>
+                    </div>
+
+                    <div className="flex justify-center gap-3 flex-wrap">
+                      <button
+                        onClick={() => setTreeSelectedBranch('simpler')}
+                        className={`w-32 p-3 rounded-xl border text-center transition-all ${
+                          treeSelectedBranch === 'simpler'
+                            ? 'bg-emerald-100 border-emerald-500 shadow-sm'
+                            : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
+                        }`}
+                      >
+                        <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wide">Simplify</p>
+                        <p className="text-[10px] text-emerald-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.simpler).substring(0, 55)}...</p>
+                      </button>
+
+                      <button
+                        onClick={() => setTreeSelectedBranch('detailed')}
+                        className={`w-32 p-3 rounded-xl border text-center transition-all ${
+                          treeSelectedBranch === 'detailed'
+                            ? 'bg-indigo-100 border-indigo-500 shadow-sm'
+                            : 'bg-indigo-50 border-indigo-200 hover:border-indigo-400'
+                        }`}
+                      >
+                        <p className="text-[10px] font-black text-indigo-600 uppercase tracking-wide">Deeper</p>
+                        <p className="text-[10px] text-indigo-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.detailed).substring(0, 55)}...</p>
+                      </button>
+
+                      <button
+                        onClick={() => setTreeSelectedBranch('visual')}
+                        className={`w-32 p-3 rounded-xl border text-center transition-all ${
+                          treeSelectedBranch === 'visual'
+                            ? 'bg-amber-100 border-amber-500 shadow-sm'
+                            : 'bg-amber-50 border-amber-200 hover:border-amber-400'
+                        }`}
+                      >
+                        <p className="text-[10px] font-black text-amber-600 uppercase tracking-wide">Visual</p>
+                        <p className="text-[10px] text-amber-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.visual).substring(0, 55)}...</p>
+                      </button>
+                    </div>
                   </div>
 
-                  <h3 className="text-3xl font-bold text-slate-900 mb-6 leading-tight">{currentCard?.title}</h3>
+                  {/* Inline content panel */}
+                  <div className="min-w-0 bg-white rounded-3xl shadow-xl border border-slate-200 p-6 sticky top-6">
+                    <div className="mb-4">
+                      <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                        {treeSelectedBranch === 'normal'
+                          ? 'Core'
+                          : treeSelectedBranch === 'simpler'
+                          ? 'Simplify'
+                          : treeSelectedBranch === 'detailed'
+                          ? 'Deeper'
+                          : treeSelectedBranch === 'visual'
+                          ? 'Visual'
+                          : 'Content'}
+                      </p>
+                      <h3 className="text-lg font-black text-slate-800 mt-1">
+                        {asText(data?.cards[treeFocusCardIndex]?.title)}
+                      </h3>
+                    </div>
 
-                  <div className="text-lg leading-relaxed text-slate-800 space-y-4 font-medium">
-                    {isRefining ? (
-                       <div className="flex flex-col items-center justify-center py-20 gap-4">
-                          <RefreshCcw className="animate-spin text-indigo-400" size={32} />
-                          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">AI is tailoring content...</p>
-                       </div>
-                    ) : refinement ? (
-                      <div className="bg-slate-50 p-8 rounded-3xl border-2 border-dashed border-indigo-200 relative">
-                        <div className="absolute -top-3 left-6 bg-indigo-600 text-white text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-1 shadow-md uppercase tracking-widest">
-                          <Sparkles size={10}/> AI Refinement
-                        </div>
-                        <div className="prose prose-sm max-w-none text-slate-900">
-                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{refinement}</ReactMarkdown>
-                        </div>
-                        <button onClick={() => setRefinement(null)} className="mt-6 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1">
-                           <ChevronLeft size={14}/> Back to original
-                        </button>
-                      </div>
+                    {treeSelectedBranch === 'visual' ? (
+                      <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                        {getTreeBranchContent().trim() || 'No visual available.'}
+                      </pre>
                     ) : (
-                      <>
-                        {view === 'normal' && <p>{currentCard?.content}</p>}
-                        {view === 'simpler' && (
-                          <div className="bg-emerald-50 p-6 rounded-3xl border-2 border-emerald-100">
-                            <p className="font-black text-emerald-700 text-xs mb-3 flex items-center gap-2 uppercase tracking-wide"><HelpCircle size={16}/> Analogy</p>
-                            <p className="text-emerald-900 italic font-semibold text-xl">"{currentCard?.simpler}"</p>
-                          </div>
-                        )}
-                        {view === 'detailed' && (
-                          <div className="bg-indigo-50 p-8 rounded-3xl text-slate-900 shadow-sm overflow-x-auto border border-indigo-100">
-                            <p className="font-black text-indigo-700 text-xs mb-4 uppercase tracking-widest flex items-center gap-2"><Info size={16}/> Technical Deep-Dive</p>
-                            <div className="prose prose-sm max-w-none leading-relaxed text-slate-950">
-                              <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{currentCard?.detailed}</ReactMarkdown>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex gap-4 pt-6 mt-4 border-t border-slate-50">
-                           <button onClick={() => handleRefine('simplify')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors">
-                              <HelpCircle size={14}/> Simplify
-                           </button>
-                           <button onClick={() => handleRefine('drill')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors">
-                              <Activity size={14}/> Drill Deeper
-                           </button>
-                        </div>
-                      </>
+                      <div className="prose prose-sm text-slate-700 max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          {getTreeBranchContent()}
+                        </ReactMarkdown>
+                      </div>
                     )}
                   </div>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
 
-                {/* Footer Controls */}
-                <div className="mt-12">
-                  <div className="flex gap-2 mb-8">
-                    {['simpler', 'normal', 'detailed'].map((v) => (
-                      <button key={v} onClick={() => {setView(v as any); setRefinement(null);}} className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${view === v ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'}`}>
-                        {v === 'simpler' ? 'Analogy' : v === 'normal' ? 'Core' : 'Technical'}
-                      </button>
-                    ))}
+        {/* MAP VIEW */}
+        {viewMode === 'map' && (
+          <div className="grid grid-cols-1 gap-3">
+            {data?.cards.map((card, i) => (
+              <button key={i} onClick={() => { resetNavigation(i); setViewMode('cards'); }}
+                className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all text-left ${index === i ? 'border-indigo-600 shadow-lg' : 'border-slate-100 hover:border-indigo-200'}`}
+              >
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Step {i + 1}</p>
+                <p className="font-bold text-slate-800">{asText(card.title)}</p>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* CARD VIEW */}
+        {viewMode === 'cards' && currentCard && (
+          <div className="bg-white rounded-3xl shadow-xl overflow-hidden">
+            <div className="bg-indigo-600 px-6 py-4">
+              <p className="text-indigo-200 text-xs font-black uppercase tracking-widest">{asText(data?.topic_summary)}</p>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">CARD {index + 1} / {CARD_COUNT}</p>
+                <h2 className="text-xl font-black text-slate-800">{asText(currentCard.title)}</h2>
+              </div>
+
+              {showHook && asText(currentCard.hook) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+                  <Lightbulb className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-0.5">Why This Matters</p>
+                    <p className="text-sm text-amber-800 leading-snug">{asText(currentCard.hook)}</p>
                   </div>
+                  <button onClick={() => setShowHook(false)} className="text-amber-400 hover:text-amber-600 text-xs font-bold shrink-0">✕</button>
+                </div>
+              )}
 
-                  <div className="flex justify-between items-center px-2">
-                    <button onClick={() => resetNavigation(Math.max(0, index - 1))} disabled={index === 0} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"><ChevronLeft size={28} /></button>
-                    <div className="flex gap-2">
-                      {[...Array(7)].map((_, i) => (
-                        <div key={i} className={`h-1.5 rounded-full transition-all ${i === index ? 'w-8 bg-indigo-600' : 'w-2 bg-slate-200'}`} />
-                      ))}
+              <div className="min-h-[140px]">
+                {isRefining || isRegenerating ? (
+                  <div className="flex items-center gap-3 text-indigo-500 py-4">
+                    <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
+                    <p className="text-sm font-bold">{isRegenerating ? 'Generating fresh explanation...' : 'AI is tailoring content...'}</p>
+                  </div>
+                ) : refinement ? (
+                  <div className="space-y-3">
+                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI Refinement</p>
+                    <div className="prose prose-sm text-slate-700">
+                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {refinement}
+                      </ReactMarkdown>
                     </div>
-                    <button onClick={() => resetNavigation(Math.min(6, index + 1))} disabled={index === 6} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"><ChevronRight size={28} /></button>
+                    <button onClick={() => setRefinement(null)} className="mt-2 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"><RefreshCcw className="w-3 h-3" /> Back to original</button>
+                  </div>
+                ) : (
+                  <>
+                    {view === 'normal' && (
+                      <div className="prose prose-sm text-slate-700">
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          {asText(currentCard.content)}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                    {view === 'simpler' && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">Analogy</p>
+                        <p className="text-slate-600 italic text-base leading-relaxed">&ldquo;{asText(currentCard.simpler)}&rdquo;</p>
+                      </div>
+                    )}
+                    {view === 'detailed' && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">Deeper Explanation</p>
+                        <div className="prose prose-sm text-slate-700">
+                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                            {asText(currentCard.detailed)}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
+                    {view === 'visual' && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1"><Terminal className="w-3 h-3" /> Visual / Diagram</p>
+                        <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                          {asText(currentCard.visual).trim() || 'No visual available for this card.'}
+                        </pre>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {!refinement && !isRefining && !isRegenerating && (
+                <div className="flex items-center gap-4 flex-wrap">
+                  <button onClick={() => handleRefine('simplify')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors">
+                    <MessageSquare className="w-3 h-3" /> Simplify
+                  </button>
+                  <button onClick={() => handleRefine('example')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors">
+                    <Lightbulb className="w-3 h-3" /> Real Example
+                  </button>
+                  <button onClick={() => handleRefine('drill')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors">
+                    <BrainCircuit className="w-3 h-3" /> Drill Deeper
+                  </button>
+                  <div className="ml-auto">
+                    <button onClick={handleRegenerateCard} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors" title="Re-explain this card with a completely different approach">
+                      <RefreshCcw className="w-3 h-3" /> Re-explain
+                    </button>
                   </div>
                 </div>
-              </motion.div>
-            </AnimatePresence>
+              )}
+            </div>
+
+            <div className="border-t border-slate-100 p-4 space-y-4">
+              <div className="flex gap-1.5">
+                {(['simpler', 'normal', 'detailed', 'visual'] as const).map((v) => (
+                  <button key={v} onClick={() => { setView(v); setRefinement(null); }}
+                    className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+                      view === v ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
+                    }`}
+                  >
+                    {v === 'simpler' ? 'Analogy' : v === 'normal' ? 'Core' : v === 'detailed' ? 'Deeper' : 'Visual'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-4">
+                <button onClick={() => resetNavigation(Math.max(0, index - 1))} disabled={index === 0} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors">
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <div className="flex-1 flex justify-center gap-2">
+                  {data?.cards.map((_, i) => (
+                    <button key={i} onClick={() => resetNavigation(i)}
+                      className={`h-2 rounded-full transition-all bg-indigo-400 ${i === index ? 'w-4 opacity-100' : 'w-2 opacity-30 hover:opacity-70'}`}
+                    />
+                  ))}
+                </div>
+                <button onClick={() => resetNavigation(Math.min(CARD_COUNT - 1, index + 1))} disabled={index === CARD_COUNT - 1} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors">
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
