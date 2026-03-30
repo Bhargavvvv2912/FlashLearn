@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
@@ -9,7 +9,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { useEffect } from 'react';
 
 interface Card {
   id: number;

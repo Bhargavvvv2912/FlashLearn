@@ -26,15 +26,20 @@ function extractJsonArray(text: string) {
 }
 
 function safeJsonParse(jsonText: string) {
+  const cleaned = jsonText.trim();
+
   try {
-    return JSON.parse(jsonText);
-  } catch {
-    const sanitized = jsonText
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t')
-      .replace(/\n/g, '\\n')
-      .replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
-    return JSON.parse(sanitized);
+    return JSON.parse(cleaned);
+  } catch (firstError) {
+    try {
+      const sanitized = cleaned
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/,\s*([}\]])/g, '$1');
+      return JSON.parse(sanitized);
+    } catch {
+      throw firstError;
+    }
   }
 }
 
