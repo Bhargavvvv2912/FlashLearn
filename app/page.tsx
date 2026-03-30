@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import { useEffect } from 'react';
 
 interface Card {
   id: number;
@@ -60,6 +61,18 @@ export default function Home() {
   // tree state
   const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
   const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
+
+  useEffect(() => {
+  // Only run in browser
+  if (typeof window === 'undefined') return;
+
+  const params = new URLSearchParams(window.location.search);
+  const selected = params.get('selectedText');
+
+  if (selected && !topic) {
+    setTopic(selected.slice(0, 300));
+  }
+}, [topic]);
 
   const getActivePersona = () => useCustomPersona ? customPersona : persona;
   const CARD_COUNT = data?.cards?.length ?? 7;
@@ -718,3 +731,4 @@ export default function Home() {
     </div>
   );
 }
+

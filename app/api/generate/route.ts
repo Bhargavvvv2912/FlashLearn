@@ -3,6 +3,12 @@ import { NextResponse } from "next/server";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 function extractJsonObject(text: string) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
@@ -32,6 +38,13 @@ function safeJsonParse(jsonText: string) {
   }
 }
 
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: corsHeaders,
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const { topic, about, persona, difficulty, action, currentContent, context, weakCards } = await req.json();
@@ -50,11 +63,14 @@ Task: ${task}
 
 Return ONLY a JSON object: {"newContent": "..."}
 `;
+
       const result = await model.generateContent(refinePrompt);
       const text = result.response.text();
       const parsed = safeJsonParse(extractJsonObject(text));
-      return NextResponse.json(parsed);
 
+      return NextResponse.json(parsed, {
+        headers: corsHeaders,
+      });
     } else if (action === 'regenerate_weak') {
       const weakList = (weakCards || []).map((c: { id: number; title: string; content: string }) =>
         `Card ${c.id}: "${c.title}"\nOriginal explanation: ${c.content}`
@@ -86,11 +102,15 @@ Return ONLY a raw JSON array:
   }
 ]
 `;
+
       const result = await model.generateContent(regenPrompt);
       const text = result.response.text();
       const parsed = safeJsonParse(extractJsonArray(text));
-      return NextResponse.json({ regenerated: parsed });
 
+      return NextResponse.json(
+        { regenerated: parsed },
+        { headers: corsHeaders }
+      );
     } else {
       const systemPrompt = `
 System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
@@ -124,17 +144,23 @@ IMPORTANT:
   ]
 }
 `;
+
       const result = await model.generateContent(systemPrompt);
       const text = result.response.text();
       const parsed = safeJsonParse(extractJsonObject(text));
-      return NextResponse.json(parsed);
-    }
 
+      return NextResponse.json(parsed, {
+        headers: corsHeaders,
+      });
+    }
   } catch (e: any) {
     console.error("Gemini API Error:", e);
     return NextResponse.json(
       { error: e.message || "Failed to generate content" },
-      { status: 500 }
+      {
+        status: 500,
+        headers: corsHeaders,
+      }
     );
   }
 }
