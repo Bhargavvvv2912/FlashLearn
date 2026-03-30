@@ -38,11 +38,26 @@ const PERSONA_CHIPS = [
 
 export default function Home() {
   const [topic, setTopic] = useState('');
-  const [about, setAbout] = useState('');
-  const [persona, setPersona] = useState('Student');
-  const [customPersona, setCustomPersona] = useState('');
-  const [difficulty, setDifficulty] = useState('Medium');
-  const [context, setContext] = useState('');
+const [about, setAbout] = useState(() => {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('flashlearn_about') || '';
+});
+const [persona, setPersona] = useState(() => {
+  if (typeof window === 'undefined') return 'Student';
+  return localStorage.getItem('flashlearn_persona') || 'Student';
+});
+const [customPersona, setCustomPersona] = useState(() => {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('flashlearn_customPersona') || '';
+});
+const [difficulty, setDifficulty] = useState(() => {
+  if (typeof window === 'undefined') return 'Medium';
+  return localStorage.getItem('flashlearn_difficulty') || 'Medium';
+});
+const [context, setContext] = useState(() => {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('flashlearn_context') || '';
+});
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [useCustomPersona, setUseCustomPersona] = useState(false);
 
@@ -61,6 +76,15 @@ export default function Home() {
   // tree state
   const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
   const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
+
+  useEffect(() => {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem('flashlearn_about', about);
+  localStorage.setItem('flashlearn_persona', persona);
+  localStorage.setItem('flashlearn_customPersona', customPersona);
+  localStorage.setItem('flashlearn_difficulty', difficulty);
+  localStorage.setItem('flashlearn_context', context);
+}, [about, persona, customPersona, difficulty, context]);
 
   useEffect(() => {
   // Only run in browser
