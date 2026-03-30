@@ -25,8 +25,10 @@ interface FlashData {
   cards: Card[];
 }
 
-type ViewMode = 'cards' | 'map' | 'tree';
+type ViewMode = 'cards' | 'map' | 'tree' | 'chat';
 type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
+
+type ChatMessage = { role: 'user' | 'assistant'; text: string };
 
 const PERSONA_CHIPS = [
   { label: '👶 Simple', value: 'Explain like I am 12 years old with no technical background', color: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -37,26 +39,26 @@ const PERSONA_CHIPS = [
 
 export default function Home() {
   const [topic, setTopic] = useState('');
-const [about, setAbout] = useState(() => {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem('flashlearn_about') || '';
-});
-const [persona, setPersona] = useState(() => {
-  if (typeof window === 'undefined') return 'Student';
-  return localStorage.getItem('flashlearn_persona') || 'Student';
-});
-const [customPersona, setCustomPersona] = useState(() => {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem('flashlearn_customPersona') || '';
-});
-const [difficulty, setDifficulty] = useState(() => {
-  if (typeof window === 'undefined') return 'Medium';
-  return localStorage.getItem('flashlearn_difficulty') || 'Medium';
-});
-const [context, setContext] = useState(() => {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem('flashlearn_context') || '';
-});
+  const [about, setAbout] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('flashlearn_about') || '';
+  });
+  const [persona, setPersona] = useState(() => {
+    if (typeof window === 'undefined') return 'Student';
+    return localStorage.getItem('flashlearn_persona') || 'Student';
+  });
+  const [customPersona, setCustomPersona] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('flashlearn_customPersona') || '';
+  });
+  const [difficulty, setDifficulty] = useState(() => {
+    if (typeof window === 'undefined') return 'Medium';
+    return localStorage.getItem('flashlearn_difficulty') || 'Medium';
+  });
+  const [context, setContext] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('flashlearn_context') || '';
+  });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [useCustomPersona, setUseCustomPersona] = useState(false);
 
@@ -76,44 +78,52 @@ const [context, setContext] = useState(() => {
   const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
   const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
 
-  useEffect(() => {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem('flashlearn_about', about);
-  localStorage.setItem('flashlearn_persona', persona);
-  localStorage.setItem('flashlearn_customPersona', customPersona);
-  localStorage.setItem('flashlearn_difficulty', difficulty);
-  localStorage.setItem('flashlearn_context', context);
-}, [about, persona, customPersona, difficulty, context]);
+  // chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
 
   useEffect(() => {
-  // Only run in browser
-  if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('flashlearn_about', about);
+    localStorage.setItem('flashlearn_persona', persona);
+    localStorage.setItem('flashlearn_customPersona', customPersona);
+    localStorage.setItem('flashlearn_difficulty', difficulty);
+    localStorage.setItem('flashlearn_context', context);
+  }, [about, persona, customPersona, difficulty, context]);
 
-  const params = new URLSearchParams(window.location.search);
-  const selected = params.get('selectedText');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const selected = params.get('selectedText');
+    if (selected && !topic) {
+      setTopic(selected.slice(0, 300));
+    }
+  }, [topic]);
 
-  if (selected && !topic) {
-    setTopic(selected.slice(0, 300));
-  }
-}, [topic]);
-
-  const getActivePersona = () => useCustomPersona ? customPersona : persona;
+  const getActivePersona = () => (useCustomPersona ? customPersona : persona);
   const CARD_COUNT = data?.cards?.length ?? 7;
   const currentCard = data?.cards?.[index] || null;
 
   const asText = (value: unknown) =>
     Array.isArray(value) ? value.join('\n') : String(value ?? '');
 
-  const ErrorBanner = () => error ? (
-    <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
-      <Info className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-      <div className="flex-1">
-        <p className="text-sm font-semibold text-red-700">Something went wrong</p>
-        <p className="text-sm text-red-600 mt-0.5">{error}</p>
+  const ErrorBanner = () =>
+    error ? (
+      <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+        <Info className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-red-700">Something went wrong</p>
+          <p className="text-sm text-red-600 mt-0.5">{error}</p>
+        </div>
+        <button
+          onClick={() => setError(null)}
+          className="text-red-400 hover:text-red-600 text-xs font-bold shrink-0"
+        >
+          ✕
+        </button>
       </div>
-      <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-xs font-bold shrink-0">✕</button>
-    </div>
-  ) : null;
+    ) : null;
 
   const generateCards = async () => {
     if (!topic.trim()) return;
@@ -123,7 +133,13 @@ const [context, setContext] = useState(() => {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, about, persona: getActivePersona(), difficulty, context }),
+        body: JSON.stringify({
+          topic,
+          about,
+          persona: getActivePersona(),
+          difficulty,
+          context,
+        }),
       });
       const result = await res.json();
       if (result.error) {
@@ -138,10 +154,15 @@ const [context, setContext] = useState(() => {
         setView('normal');
         setTreeFocusCardIndex(null);
         setTreeSelectedBranch(null);
+        // reset chat for new learning path
+        setChatMessages([]);
+        setChatInput('');
       }
     } catch (e) {
       console.error(e);
-      setError('Failed to connect to AI. Please check your connection and try again.');
+      setError(
+        'Failed to connect to AI. Please check your connection and try again.',
+      );
     }
     setLoading(false);
   };
@@ -159,10 +180,13 @@ const [context, setContext] = useState(() => {
     setError(null);
 
     const currentText =
-      view === 'normal'   ? asText(data.cards[index].content)  :
-      view === 'simpler'  ? asText(data.cards[index].simpler)  :
-      view === 'detailed' ? asText(data.cards[index].detailed) :
-                            asText(data.cards[index].visual);
+      view === 'normal'
+        ? asText(data.cards[index].content)
+        : view === 'simpler'
+        ? asText(data.cards[index].simpler)
+        : view === 'detailed'
+        ? asText(data.cards[index].detailed)
+        : asText(data.cards[index].visual);
 
     try {
       const res = await fetch('/api/generate', {
@@ -209,7 +233,13 @@ const [context, setContext] = useState(() => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'regenerate_weak',
-          weakCards: [{ id: card.id, title: asText(card.title), content: asText(card.content) }],
+          weakCards: [
+            {
+              id: card.id,
+              title: asText(card.title),
+              content: asText(card.content),
+            },
+          ],
           about,
           persona: getActivePersona(),
           context,
@@ -223,7 +253,9 @@ const [context, setContext] = useState(() => {
       } else {
         const regen = result.regenerated?.[0];
         if (regen) {
-          const updatedCards = data.cards.map((c, i) => i === index ? { ...c, ...regen } : c);
+          const updatedCards = data.cards.map((c, i) =>
+            i === index ? { ...c, ...regen } : c,
+          );
           setData({ ...data, cards: updatedCards });
           setRefinement(null);
           setShowHook(true);
@@ -245,7 +277,10 @@ const [context, setContext] = useState(() => {
     setIsRegenerating(false);
   };
 
-  const resetNavigation = (newIndex: number, newView?: 'normal' | 'simpler' | 'detailed' | 'visual') => {
+  const resetNavigation = (
+    newIndex: number,
+    newView?: 'normal' | 'simpler' | 'detailed' | 'visual',
+  ) => {
     setIndex(newIndex);
     setRefinement(null);
     setView(newView || 'normal');
@@ -253,13 +288,64 @@ const [context, setContext] = useState(() => {
   };
 
   const getTreeBranchContent = () => {
-    if (!data || treeFocusCardIndex === null || treeSelectedBranch === null) return '';
+    if (!data || treeFocusCardIndex === null || treeSelectedBranch === null)
+      return '';
     const card = data.cards[treeFocusCardIndex];
     if (treeSelectedBranch === 'normal') return asText(card.content);
     if (treeSelectedBranch === 'simpler') return asText(card.simpler);
     if (treeSelectedBranch === 'detailed') return asText(card.detailed);
     if (treeSelectedBranch === 'visual') return asText(card.visual);
     return '';
+  };
+
+  const handleChat = async () => {
+    if (!data || !chatInput.trim()) return;
+
+    const userMessage = chatInput.trim();
+    const nextHistory: ChatMessage[] = [
+      ...chatMessages,
+      { role: 'user', text: userMessage },
+    ];
+
+    setChatMessages(nextHistory);
+    setChatInput('');
+    setChatLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'chat',
+          topic,
+          about,
+          persona: getActivePersona(),
+          difficulty,
+          context,
+          topicSummary: data.topic_summary,
+          cards: data.cards,
+          question: userMessage,
+          chatHistory: nextHistory,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (result.error) {
+        setError(`Chat failed: ${result.error}`);
+      } else {
+        setChatMessages((prev) => [
+          ...prev,
+          { role: 'assistant', text: result.reply },
+        ]);
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Chat failed. Please try again.');
+    }
+
+    setChatLoading(false);
   };
 
   // SETUP VIEW
@@ -270,32 +356,45 @@ const [context, setContext] = useState(() => {
           <div className="text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <Zap className="w-6 h-6 text-indigo-600" />
-              <h1 className="text-2xl font-black text-slate-800">FlashLearnHAI</h1>
+              <h1 className="text-2xl font-black text-slate-800">
+                FlashLearnHAI
+              </h1>
             </div>
-            <p className="text-slate-500 text-sm">Understand any topic — without the information overload</p>
+            <p className="text-slate-500 text-sm">
+              Understand any topic — without the information overload
+            </p>
           </div>
 
           <ErrorBanner />
 
           <div>
-            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">What are you curious about?</label>
+            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+              What are you curious about?
+            </label>
             <input
               type="text"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && topic.trim() && generateCards()}
+              onKeyDown={(e) =>
+                e.key === 'Enter' && topic.trim() && generateCards()
+              }
               placeholder="e.g. Fluid dynamics, Quantum entanglement, Black holes..."
               className="w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Explain it like I am a...</label>
+            <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+              Explain it like I am a...
+            </label>
             <div className="flex flex-wrap gap-2">
               {PERSONA_CHIPS.map((chip) => (
                 <button
                   key={chip.value}
-                  onClick={() => { setPersona(chip.value); setUseCustomPersona(false); }}
+                  onClick={() => {
+                    setPersona(chip.value);
+                    setUseCustomPersona(false);
+                  }}
                   className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all ${
                     persona === chip.value && !useCustomPersona
                       ? 'ring-2 ring-indigo-500 ring-offset-1 ' + chip.color
@@ -308,7 +407,9 @@ const [context, setContext] = useState(() => {
               <button
                 onClick={() => setUseCustomPersona(true)}
                 className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all bg-slate-50 text-slate-600 border-slate-200 ${
-                  useCustomPersona ? 'ring-2 ring-indigo-500 ring-offset-1 opacity-100' : 'opacity-60 hover:opacity-100'
+                  useCustomPersona
+                    ? 'ring-2 ring-indigo-500 ring-offset-1 opacity-100'
+                    : 'opacity-60 hover:opacity-100'
                 }`}
               >
                 ✏️ Custom
@@ -330,14 +431,20 @@ const [context, setContext] = useState(() => {
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="flex items-center gap-2 text-xs font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-800 transition-colors"
             >
-              {showAdvanced ? <Minus className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+              {showAdvanced ? (
+                <Minus className="w-3 h-3" />
+              ) : (
+                <Plus className="w-3 h-3" />
+              )}
               {showAdvanced ? 'Hide Advanced Settings' : 'Advanced Settings'}
             </button>
 
             {showAdvanced && (
               <div className="mt-4 space-y-4">
                 <div>
-                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Your Background (Optional)</label>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+                    Your Background (Optional)
+                  </label>
                   <textarea
                     value={about}
                     onChange={(e) => setAbout(e.target.value)}
@@ -347,7 +454,9 @@ const [context, setContext] = useState(() => {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Complexity</label>
+                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+                      Complexity
+                    </label>
                     <select
                       value={difficulty}
                       onChange={(e) => setDifficulty(e.target.value)}
@@ -360,10 +469,15 @@ const [context, setContext] = useState(() => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Persona (Manual)</label>
+                    <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+                      Persona (Manual)
+                    </label>
                     <select
                       value={persona}
-                      onChange={(e) => { setPersona(e.target.value); setUseCustomPersona(false); }}
+                      onChange={(e) => {
+                        setPersona(e.target.value);
+                        setUseCustomPersona(false);
+                      }}
                       className="w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                     >
                       <option>Student</option>
@@ -375,7 +489,9 @@ const [context, setContext] = useState(() => {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Additional Context</label>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
+                    Additional Context
+                  </label>
                   <textarea
                     value={context}
                     onChange={(e) => setContext(e.target.value)}
@@ -405,7 +521,9 @@ const [context, setContext] = useState(() => {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center space-y-4">
           <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto" />
-          <p className="text-slate-500 font-bold text-sm uppercase tracking-widest">Constructing Learning Pathway...</p>
+          <p className="text-slate-500 font-bold text-sm uppercase tracking-widest">
+            Constructing Learning Pathway...
+          </p>
         </div>
       </div>
     );
@@ -416,13 +534,64 @@ const [context, setContext] = useState(() => {
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-2xl space-y-4">
         <div className="flex items-center justify-between">
-          <button onClick={() => { setData(null); setError(null); }} className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm">
+          <button
+            onClick={() => {
+              setData(null);
+              setError(null);
+              setChatMessages([]);
+              setChatInput('');
+            }}
+            className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm"
+          >
             <ChevronLeft className="w-4 h-4" /> New Topic
           </button>
           <div className="flex gap-2">
-            <button onClick={() => setViewMode('cards')} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'cards' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}><LayoutList className="w-4 h-4" /></button>
-            <button onClick={() => setViewMode('map')} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'map' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}><MapIcon className="w-4 h-4" /></button>
-            <button onClick={() => { setViewMode('tree'); setTreeFocusCardIndex(null); setTreeSelectedBranch(null); }} className={`px-3 py-2 rounded-lg font-bold text-sm transition ${viewMode === 'tree' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`} title="Knowledge Tree"><GitBranch className="w-4 h-4" /></button>
+            <button
+              onClick={() => setViewMode('cards')}
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+                viewMode === 'cards'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              <LayoutList className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('map')}
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+                viewMode === 'map'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              <MapIcon className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => {
+                setViewMode('tree');
+                setTreeFocusCardIndex(null);
+                setTreeSelectedBranch(null);
+              }}
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+                viewMode === 'tree'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              title="Knowledge Tree"
+            >
+              <GitBranch className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('chat')}
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+                viewMode === 'chat'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              title="Chat"
+            >
+              <MessageSquare className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
@@ -433,18 +602,24 @@ const [context, setContext] = useState(() => {
           <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col">
             <div className="shrink-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
               <div>
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Knowledge Tree</p>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                  Knowledge Tree
+                </p>
                 <p className="text-sm font-bold text-slate-700">
                   {treeFocusCardIndex === null
                     ? asText(data?.topic_summary)
-                    : `Focused: ${asText(data?.cards[treeFocusCardIndex]?.title)}`
-                  }
+                    : `Focused: ${asText(
+                        data?.cards[treeFocusCardIndex]?.title,
+                      )}`}
                 </p>
               </div>
               <div className="flex gap-2">
                 {treeFocusCardIndex !== null && (
                   <button
-                    onClick={() => { setTreeFocusCardIndex(null); setTreeSelectedBranch(null); }}
+                    onClick={() => {
+                      setTreeFocusCardIndex(null);
+                      setTreeSelectedBranch(null);
+                    }}
                     className="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-300 transition-colors"
                   >
                     Back to Topic Tree
@@ -470,21 +645,48 @@ const [context, setContext] = useState(() => {
                       </div>
                     </div>
 
-                    <div className="relative flex justify-center mb-3" style={{ height: '40px' }}>
-                      <svg width="100%" height="40" className="absolute inset-0" style={{ minWidth: `${Math.max((data?.cards.length || 1) * 180, 700)}px` }}>
+                    <div
+                      className="relative flex justify-center mb-3"
+                      style={{ height: '40px' }}
+                    >
+                      <svg
+                        width="100%"
+                        height="40"
+                        className="absolute inset-0"
+                        style={{
+                          minWidth: `${
+                            Math.max((data?.cards.length || 1) * 180, 700)
+                          }px`,
+                        }}
+                      >
                         {data?.cards.map((_, i) => {
                           const total = data.cards.length || 1;
                           const cardWidth = 100 / total;
                           const centerX = cardWidth * i + cardWidth / 2;
                           return (
-                            <line key={i} x1="50%" y1="0" x2={`${centerX}%`} y2="40" stroke="#cbd5e1" strokeWidth="1.5" />
+                            <line
+                              key={i}
+                              x1="50%"
+                              y1="0"
+                              x2={`${centerX}%`}
+                              y2="40"
+                              stroke="#cbd5e1"
+                              strokeWidth="1.5"
+                            />
                           );
                         })}
                         <circle cx="50%" cy="0" r="3" fill="#6366f1" />
                       </svg>
                     </div>
 
-                    <div className="flex gap-4 justify-center mb-3" style={{ minWidth: `${Math.max((data?.cards.length || 1) * 180, 700)}px` }}>
+                    <div
+                      className="flex gap-4 justify-center mb-3"
+                      style={{
+                        minWidth: `${
+                          Math.max((data?.cards.length || 1) * 180, 700)
+                        }px`,
+                      }}
+                    >
                       {data?.cards.map((card, i) => (
                         <button
                           key={i}
@@ -497,12 +699,16 @@ const [context, setContext] = useState(() => {
                           <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
                             {i + 1}
                           </div>
-                          <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">{asText(card.title)}</p>
+                          <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">
+                            {asText(card.title)}
+                          </p>
                         </button>
                       ))}
                     </div>
 
-                    <p className="text-center text-xs text-slate-400 mt-6">Click a flashcard node to expand its explanation tree</p>
+                    <p className="text-center text-xs text-slate-400 mt-6">
+                      Click a flashcard node to expand its explanation tree
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -518,16 +724,46 @@ const [context, setContext] = useState(() => {
                             : 'border-slate-300 bg-white hover:border-indigo-400'
                         }`}
                       >
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Root Flashcard</p>
-                        <p className="text-sm font-black text-slate-800 mt-1">{asText(data?.cards[treeFocusCardIndex]?.title)}</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          Root Flashcard
+                        </p>
+                        <p className="text-sm font-black text-slate-800 mt-1">
+                          {asText(
+                            data?.cards[treeFocusCardIndex]?.title,
+                          )}
+                        </p>
                       </button>
                     </div>
 
-                    <div className="relative flex justify-center mb-4" style={{ height: '56px' }}>
+                    <div
+                      className="relative flex justify-center mb-4"
+                      style={{ height: '56px' }}
+                    >
                       <svg width="420" height="56" className="absolute">
-                        <line x1="210" y1="0" x2="70" y2="56" stroke="#d1fae5" strokeWidth="1.5" />
-                        <line x1="210" y1="0" x2="210" y2="56" stroke="#e0e7ff" strokeWidth="1.5" />
-                        <line x1="210" y1="0" x2="350" y2="56" stroke="#fef3c7" strokeWidth="1.5" />
+                        <line
+                          x1="210"
+                          y1="0"
+                          x2="70"
+                          y2="56"
+                          stroke="#d1fae5"
+                          strokeWidth="1.5"
+                        />
+                        <line
+                          x1="210"
+                          y1="0"
+                          x2="210"
+                          y2="56"
+                          stroke="#e0e7ff"
+                          strokeWidth="1.5"
+                        />
+                        <line
+                          x1="210"
+                          y1="0"
+                          x2="350"
+                          y2="56"
+                          stroke="#fef3c7"
+                          strokeWidth="1.5"
+                        />
                         <circle cx="210" cy="0" r="3" fill="#6366f1" />
                       </svg>
                     </div>
@@ -541,8 +777,15 @@ const [context, setContext] = useState(() => {
                             : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
                         }`}
                       >
-                        <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wide">Simplify</p>
-                        <p className="text-[10px] text-emerald-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.simpler).substring(0, 55)}...</p>
+                        <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wide">
+                          Simplify
+                        </p>
+                        <p className="text-[10px] text-emerald-700 mt-1 line-clamp-2">
+                          {asText(
+                            data?.cards[treeFocusCardIndex]?.simpler,
+                          ).substring(0, 55)}
+                          ...
+                        </p>
                       </button>
 
                       <button
@@ -553,8 +796,15 @@ const [context, setContext] = useState(() => {
                             : 'bg-indigo-50 border-indigo-200 hover:border-indigo-400'
                         }`}
                       >
-                        <p className="text-[10px] font-black text-indigo-600 uppercase tracking-wide">Deeper</p>
-                        <p className="text-[10px] text-indigo-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.detailed).substring(0, 55)}...</p>
+                        <p className="text-[10px] font-black text-indigo-600 uppercase tracking-wide">
+                          Deeper
+                        </p>
+                        <p className="text-[10px] text-indigo-700 mt-1 line-clamp-2">
+                          {asText(
+                            data?.cards[treeFocusCardIndex]?.detailed,
+                          ).substring(0, 55)}
+                          ...
+                        </p>
                       </button>
 
                       <button
@@ -565,8 +815,15 @@ const [context, setContext] = useState(() => {
                             : 'bg-amber-50 border-amber-200 hover:border-amber-400'
                         }`}
                       >
-                        <p className="text-[10px] font-black text-amber-600 uppercase tracking-wide">Visual</p>
-                        <p className="text-[10px] text-amber-700 mt-1 line-clamp-2">{asText(data?.cards[treeFocusCardIndex]?.visual).substring(0, 55)}...</p>
+                        <p className="text-[10px] font-black text-amber-600 uppercase tracking-wide">
+                          Visual
+                        </p>
+                        <p className="text-[10px] text-amber-700 mt-1 line-clamp-2">
+                          {asText(
+                            data?.cards[treeFocusCardIndex]?.visual,
+                          ).substring(0, 55)}
+                          ...
+                        </p>
                       </button>
                     </div>
                   </div>
@@ -586,17 +843,23 @@ const [context, setContext] = useState(() => {
                           : 'Content'}
                       </p>
                       <h3 className="text-lg font-black text-slate-800 mt-1">
-                        {asText(data?.cards[treeFocusCardIndex]?.title)}
+                        {asText(
+                          data?.cards[treeFocusCardIndex]?.title,
+                        )}
                       </h3>
                     </div>
 
                     {treeSelectedBranch === 'visual' ? (
                       <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
-                        {getTreeBranchContent().trim() || 'No visual available.'}
+                        {getTreeBranchContent().trim() ||
+                          'No visual available.'}
                       </pre>
                     ) : (
                       <div className="prose prose-sm text-slate-700 max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkMath]}
+                          rehypePlugins={[rehypeKatex]}
+                        >
                           {getTreeBranchContent()}
                         </ReactMarkdown>
                       </div>
@@ -612,13 +875,95 @@ const [context, setContext] = useState(() => {
         {viewMode === 'map' && (
           <div className="grid grid-cols-1 gap-3">
             {data?.cards.map((card, i) => (
-              <button key={i} onClick={() => { resetNavigation(i); setViewMode('cards'); }}
-                className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all text-left ${index === i ? 'border-indigo-600 shadow-lg' : 'border-slate-100 hover:border-indigo-200'}`}
+              <button
+                key={i}
+                onClick={() => {
+                  resetNavigation(i);
+                  setViewMode('cards');
+                }}
+                className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all text-left ${
+                  index === i
+                    ? 'border-indigo-600 shadow-lg'
+                    : 'border-slate-100 hover:border-indigo-200'
+                }`}
               >
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Step {i + 1}</p>
-                <p className="font-bold text-slate-800">{asText(card.title)}</p>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                  Step {i + 1}
+                </p>
+                <p className="font-bold text-slate-800">
+                  {asText(card.title)}
+                </p>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* CHAT VIEW */}
+        {viewMode === 'chat' && data && (
+          <div className="bg-white rounded-3xl shadow-xl overflow-hidden">
+            <div className="bg-indigo-600 px-6 py-4">
+              <p className="text-indigo-200 text-xs font-black uppercase tracking-widest">
+                Ask about this learning path
+              </p>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+                  Grounding
+                </p>
+                <p className="text-sm text-slate-700 mt-1">
+                  Answers stay focused on the current topic and generated
+                  flashcards.
+                </p>
+              </div>
+
+              <div className="h-[360px] overflow-y-auto border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50">
+                {chatMessages.length === 0 && (
+                  <p className="text-sm text-slate-500">
+                    Ask a follow-up like “Can you connect card 2 and card 4?”
+                    or “Give me a simpler intuition.”
+                  </p>
+                )}
+
+                {chatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                      msg.role === 'user'
+                        ? 'ml-auto bg-indigo-600 text-white'
+                        : 'bg-white border border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                ))}
+
+                {chatLoading && (
+                  <div className="bg-white border border-slate-200 text-slate-700 max-w-[85%] rounded-2xl px-4 py-3 text-sm">
+                    Thinking...
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleChat()}
+                  placeholder="Ask a follow-up question..."
+                  className="flex-1 p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+                <button
+                  onClick={handleChat}
+                  disabled={!chatInput.trim() || chatLoading}
+                  className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 disabled:opacity-30"
+                >
+                  Ask
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -626,23 +971,38 @@ const [context, setContext] = useState(() => {
         {viewMode === 'cards' && currentCard && (
           <div className="bg-white rounded-3xl shadow-xl overflow-hidden">
             <div className="bg-indigo-600 px-6 py-4">
-              <p className="text-indigo-200 text-xs font-black uppercase tracking-widest">{asText(data?.topic_summary)}</p>
+              <p className="text-indigo-200 text-xs font-black uppercase tracking-widest">
+                {asText(data?.topic_summary)}
+              </p>
             </div>
 
             <div className="p-6 space-y-5">
               <div>
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">CARD {index + 1} / {CARD_COUNT}</p>
-                <h2 className="text-xl font-black text-slate-800">{asText(currentCard.title)}</h2>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                  CARD {index + 1} / {CARD_COUNT}
+                </p>
+                <h2 className="text-xl font-black text-slate-800">
+                  {asText(currentCard.title)}
+                </h2>
               </div>
 
               {showHook && asText(currentCard.hook) && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
                   <Lightbulb className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
                   <div className="flex-1">
-                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-0.5">Why This Matters</p>
-                    <p className="text-sm text-amber-800 leading-snug">{asText(currentCard.hook)}</p>
+                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-0.5">
+                      Why This Matters
+                    </p>
+                    <p className="text-sm text-amber-800 leading-snug">
+                      {asText(currentCard.hook)}
+                    </p>
                   </div>
-                  <button onClick={() => setShowHook(false)} className="text-amber-400 hover:text-amber-600 text-xs font-bold shrink-0">✕</button>
+                  <button
+                    onClick={() => setShowHook(false)}
+                    className="text-amber-400 hover:text-amber-600 text-xs font-bold shrink-0"
+                  >
+                    ✕
+                  </button>
                 </div>
               )}
 
@@ -650,38 +1010,64 @@ const [context, setContext] = useState(() => {
                 {isRefining || isRegenerating ? (
                   <div className="flex items-center gap-3 text-indigo-500 py-4">
                     <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
-                    <p className="text-sm font-bold">{isRegenerating ? 'Generating fresh explanation...' : 'AI is tailoring content...'}</p>
+                    <p className="text-sm font-bold">
+                      {isRegenerating
+                        ? 'Generating fresh explanation...'
+                        : 'AI is tailoring content...'}
+                    </p>
                   </div>
                 ) : refinement ? (
                   <div className="space-y-3">
-                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI Refinement</p>
+                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> AI Refinement
+                    </p>
                     <div className="prose prose-sm text-slate-700">
-                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                      >
                         {refinement}
                       </ReactMarkdown>
                     </div>
-                    <button onClick={() => setRefinement(null)} className="mt-2 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"><RefreshCcw className="w-3 h-3" /> Back to original</button>
+                    <button
+                      onClick={() => setRefinement(null)}
+                      className="mt-2 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"
+                    >
+                      <RefreshCcw className="w-3 h-3" /> Back to original
+                    </button>
                   </div>
                 ) : (
                   <>
                     {view === 'normal' && (
                       <div className="prose prose-sm text-slate-700">
-                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkMath]}
+                          rehypePlugins={[rehypeKatex]}
+                        >
                           {asText(currentCard.content)}
                         </ReactMarkdown>
                       </div>
                     )}
                     {view === 'simpler' && (
                       <div className="space-y-2">
-                        <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">Analogy</p>
-                        <p className="text-slate-600 italic text-base leading-relaxed">&ldquo;{asText(currentCard.simpler)}&rdquo;</p>
+                        <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">
+                          Analogy
+                        </p>
+                        <p className="text-slate-600 italic text-base leading-relaxed">
+                          &ldquo;{asText(currentCard.simpler)}&rdquo;
+                        </p>
                       </div>
                     )}
                     {view === 'detailed' && (
                       <div className="space-y-2">
-                        <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">Deeper Explanation</p>
+                        <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">
+                          Deeper Explanation
+                        </p>
                         <div className="prose prose-sm text-slate-700">
-                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          <ReactMarkdown
+                            remarkPlugins={[remarkMath]}
+                            rehypePlugins={[rehypeKatex]}
+                          >
                             {asText(currentCard.detailed)}
                           </ReactMarkdown>
                         </div>
@@ -689,9 +1075,12 @@ const [context, setContext] = useState(() => {
                     )}
                     {view === 'visual' && (
                       <div className="space-y-2">
-                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1"><Terminal className="w-3 h-3" /> Visual / Diagram</p>
+                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1">
+                          <Terminal className="w-3 h-3" /> Visual / Diagram
+                        </p>
                         <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
-                          {asText(currentCard.visual).trim() || 'No visual available for this card.'}
+                          {asText(currentCard.visual).trim() ||
+                            'No visual available for this card.'}
                         </pre>
                       </div>
                     )}
@@ -701,17 +1090,30 @@ const [context, setContext] = useState(() => {
 
               {!refinement && !isRefining && !isRegenerating && (
                 <div className="flex items-center gap-4 flex-wrap">
-                  <button onClick={() => handleRefine('simplify')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors">
+                  <button
+                    onClick={() => handleRefine('simplify')}
+                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors"
+                  >
                     <MessageSquare className="w-3 h-3" /> Simplify
                   </button>
-                  <button onClick={() => handleRefine('example')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors">
+                  <button
+                    onClick={() => handleRefine('example')}
+                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors"
+                  >
                     <Lightbulb className="w-3 h-3" /> Real Example
                   </button>
-                  <button onClick={() => handleRefine('drill')} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors">
+                  <button
+                    onClick={() => handleRefine('drill')}
+                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
+                  >
                     <BrainCircuit className="w-3 h-3" /> Drill Deeper
                   </button>
                   <div className="ml-auto">
-                    <button onClick={handleRegenerateCard} className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors" title="Re-explain this card with a completely different approach">
+                    <button
+                      onClick={handleRegenerateCard}
+                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors"
+                      title="Re-explain this card with a completely different approach"
+                    >
                       <RefreshCcw className="w-3 h-3" /> Re-explain
                     </button>
                   </div>
@@ -721,29 +1123,60 @@ const [context, setContext] = useState(() => {
 
             <div className="border-t border-slate-100 p-4 space-y-4">
               <div className="flex gap-1.5">
-                {(['simpler', 'normal', 'detailed', 'visual'] as const).map((v) => (
-                  <button key={v} onClick={() => { setView(v); setRefinement(null); }}
-                    className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
-                      view === v ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
-                    }`}
-                  >
-                    {v === 'simpler' ? 'Analogy' : v === 'normal' ? 'Core' : v === 'detailed' ? 'Deeper' : 'Visual'}
-                  </button>
-                ))}
+                {(['simpler', 'normal', 'detailed', 'visual'] as const).map(
+                  (v) => (
+                    <button
+                      key={v}
+                      onClick={() => {
+                        setView(v);
+                        setRefinement(null);
+                      }}
+                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+                        view === v
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
+                      }`}
+                    >
+                      {v === 'simpler'
+                        ? 'Analogy'
+                        : v === 'normal'
+                        ? 'Core'
+                        : v === 'detailed'
+                        ? 'Deeper'
+                        : 'Visual'}
+                    </button>
+                  ),
+                )}
               </div>
 
               <div className="flex items-center gap-4">
-                <button onClick={() => resetNavigation(Math.max(0, index - 1))} disabled={index === 0} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors">
+                <button
+                  onClick={() => resetNavigation(Math.max(0, index - 1))}
+                  disabled={index === 0}
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
                 <div className="flex-1 flex justify-center gap-2">
                   {data?.cards.map((_, i) => (
-                    <button key={i} onClick={() => resetNavigation(i)}
-                      className={`h-2 rounded-full transition-all bg-indigo-400 ${i === index ? 'w-4 opacity-100' : 'w-2 opacity-30 hover:opacity-70'}`}
+                    <button
+                      key={i}
+                      onClick={() => resetNavigation(i)}
+                      className={`h-2 rounded-full transition-all bg-indigo-400 ${
+                        i === index
+                          ? 'w-4 opacity-100'
+                          : 'w-2 opacity-30 hover:opacity-70'
+                      }`}
                     />
                   ))}
                 </div>
-                <button onClick={() => resetNavigation(Math.min(CARD_COUNT - 1, index + 1))} disabled={index === CARD_COUNT - 1} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors">
+                <button
+                  onClick={() =>
+                    resetNavigation(Math.min(CARD_COUNT - 1, index + 1))
+                  }
+                  disabled={index === CARD_COUNT - 1}
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                >
                   <ChevronRight className="w-5 h-5" />
                 </button>
               </div>
@@ -754,4 +1187,3 @@ const [context, setContext] = useState(() => {
     </div>
   );
 }
-

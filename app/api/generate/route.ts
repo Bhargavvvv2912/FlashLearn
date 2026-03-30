@@ -52,7 +52,21 @@ export async function OPTIONS() {
 
 export async function POST(req: Request) {
   try {
-    const { topic, about, persona, difficulty, action, currentContent, context, weakCards } = await req.json();
+    const {
+      topic,
+      about,
+      persona,
+      difficulty,
+      action,
+      currentContent,
+      context,
+      weakCards,
+      cards,
+      topicSummary,
+      question,
+      chatHistory,
+    } = await req.json();
+
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     if (action === 'drill' || action === 'simplify' || action === 'example') {
@@ -116,6 +130,49 @@ Return ONLY a raw JSON array:
         { regenerated: parsed },
         { headers: corsHeaders }
       );
+    } else if (action === 'chat') {
+      const historyText = (chatHistory || [])
+        .map((m: { role: string; text: string }) => `${m.role.toUpperCase()}: ${m.text}`)
+        .join('\n');
+
+      const chatPrompt = `
+You are a concise tutor helping a learner understand a topic using ONLY the provided learning path.
+
+STRICT RULES:
+- Stay grounded in the topic summary and cards below
+- Prefer re-explaining, connecting, simplifying, or comparing existing cards
+- Do not introduce lots of new concepts unless the user explicitly asks
+- Keep the answer under 120 words
+- Be clear and supportive, not verbose
+
+Learner background: ${about || 'General learner'}
+Persona: ${persona}
+Difficulty: ${difficulty}
+Context: ${context || 'None'}
+
+Topic: ${topic}
+Topic summary: ${topicSummary}
+
+Cards:
+${JSON.stringify(cards, null, 2)}
+
+Previous chat:
+${historyText || 'None'}
+
+User question:
+${question}
+
+Return ONLY a JSON object:
+{"reply": "..."}
+`;
+
+      const result = await model.generateContent(chatPrompt);
+      const text = result.response.text();
+      const parsed = safeJsonParse(extractJsonObject(text));
+
+      return NextResponse.json(parsed, {
+        headers: corsHeaders,
+      });
     } else {
       const systemPrompt = `
 System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
