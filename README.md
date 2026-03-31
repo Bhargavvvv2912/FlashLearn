@@ -181,8 +181,8 @@ All AI interactions go through a single route. The `action` field determines the
 
 ## 👤 Author
 
-**Bhargav Keralapur Srinidhi**
-**Haripreeth Avarur**
-**Mohammed Almakrami**
-Graduate Students — Human-AI Interaction Course Project
+**Bhargav Keralapur Srinidhi**,
+**Haripreeth Avarur**,
+**Mohammed Almakrami**,
+Human-AI Interaction Course Project
 University of Michigan, Ann Arbor
