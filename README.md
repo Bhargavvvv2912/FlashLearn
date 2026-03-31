@@ -50,24 +50,6 @@ The result: users learn the same topic with significantly fewer words consumed.
 - Highlight text on any webpage → generate a learning path instantly
 - Persona settings persist across multiple selections on the same page
 
----
-
-## 🗂️ Project Structure
-flashlearn/
-├── app/
-│ ├── page.tsx # Main UI — all views and state
-│ └── api/
-│ └── generate/
-│ └── route.ts # Gemini API handler (generate, refine, regenerate, chat)
-├── flashlearn-extension/
-│ ├── manifest.json # Chrome Extension Manifest v3
-│ ├── background.js # Service worker — side panel registration
-│ ├── content.js # Injected script — captures selected text
-│ ├── sidepanel.html # Side panel shell
-│ └── sidepanel.js # Injects the Vercel app URL with selectedText param
-├── public/
-├── package.json
-└── README.md
 
 text
 
