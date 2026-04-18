@@ -1,28 +1,31 @@
 let btn = null;
 
 function extractPageContent() {
-  // Wikipedia-specific: grab headings + paragraphs from article body
-  const wikiContent = document.querySelector('#mw-content-text');
-  if (wikiContent) {
-    const elements = wikiContent.querySelectorAll('h2, h3, p');
-    let text = Array.from(elements).map(el => {
-      if (el.tagName === 'H2' || el.tagName === 'H3') {
-        const headline = el.querySelector('.mw-headline') || el;
-        return '\n## ' + headline.innerText.trim();
-      }
-      return el.innerText.trim();
-    }).filter(t => t.length > 20).join('\n\n');
-    // Strip citation markers like [1], [2]
-    text = text.replace(/\[\d+\]/g, '').trim();
-    return text.slice(0, 15000);
+  try {
+    const wikiContent = document.querySelector('#mw-content-text');
+    if (wikiContent) {
+      const elements = wikiContent.querySelectorAll('h2, h3, p');
+      let text = Array.from(elements).map(el => {
+        if (el.tagName === 'H2' || el.tagName === 'H3') {
+          const headline = el.querySelector('.mw-headline') || el;
+          return '\n## ' + headline.innerText.trim();
+        }
+        return el.innerText.trim();
+      }).filter(t => t.length > 20).join('\n\n');
+      text = text.replace(/\[\d+\]/g, '').trim();
+      return text.slice(0, 15000);
+    }
+    const main = document.querySelector('main') || document.querySelector('article') || document.body;
+    return (main.innerText || '').replace(/\s{3,}/g, '\n\n').slice(0, 10000);
+  } catch (e) {
+    return '';
   }
-
-  // Fallback for any other page
-  const main = document.querySelector('main') || document.querySelector('article') || document.body;
-  return (main.innerText || '').replace(/\s{3,}/g, '\n\n').slice(0, 10000);
 }
 
-document.addEventListener('mouseup', () => {
+document.addEventListener('mouseup', (e) => {
+  // Don't react to mouseup events that originated from our own button
+  if (btn && btn.contains(e.target)) return;
+
   const selection = window.getSelection();
   const text = selection?.toString().trim();
 
@@ -37,6 +40,7 @@ document.addEventListener('mouseup', () => {
         padding: 6px 12px; font-size: 13px;
         cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
         font-family: system-ui, sans-serif;
+        user-select: none;
       `;
       document.body.appendChild(btn);
     }
@@ -46,11 +50,13 @@ document.addEventListener('mouseup', () => {
     btn.style.left = `${range.left}px`;
     btn.style.display = 'block';
 
+    // Capture selected text now — it'll be cleared by the time onclick fires
+    const captured = text;
     btn.onclick = () => {
       const pageContent = extractPageContent();
       chrome.runtime.sendMessage({
         type: 'OPEN_PANEL',
-        text,
+        text: captured,
         pageUrl: window.location.href,
         pageTitle: document.title,
         pageContent,
