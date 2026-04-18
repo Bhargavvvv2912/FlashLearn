@@ -22,22 +22,74 @@ function extractPageContent() {
   }
 }
 
+/**
+ * Finds searchText in the page by walking raw DOM text nodes (so citation
+ * markers like [1][23] don't block the match), scrolls to it, and tries to
+ * visually highlight it.  Returns true on success.
+ */
+function findAndScrollToAnchor(searchText) {
+  const needle = searchText
+    .replace(/\[\d+\]/g, '')   // strip citation markers
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (needle.length < 4) return false;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const tag = node.parentElement?.tagName?.toLowerCase?.() ?? '';
+      if (['script', 'style', 'noscript', 'head'].includes(tag)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const segments = [];
+  let haystack = '';
+  let node;
+  while ((node = walker.nextNode())) {
+    const clean = node.textContent.replace(/\[\d+\]/g, '').replace(/\s+/g, ' ');
+    segments.push({ node, start: haystack.length, len: clean.length });
+    haystack += clean;
+  }
+
+  const idx = haystack.toLowerCase().indexOf(needle);
+  if (idx === -1) return false;
+
+  const seg = segments.find(s => s.start <= idx && idx < s.start + s.len);
+  if (!seg?.node?.parentElement) return false;
+
+  // Scroll the matching element into the center of the viewport
+  seg.node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // Visually highlight by selecting the text in the DOM range
+  try {
+    const range = document.createRange();
+    // Map the cleaned-text offset back to the raw text node offset
+    const raw = seg.node.textContent;
+    let rawPos = 0;
+    let cleanPos = 0;
+    const targetCleanPos = idx - seg.start;
+    while (cleanPos < targetCleanPos && rawPos < raw.length) {
+      const ciMatch = raw.slice(rawPos).match(/^\[\d+\]/);
+      if (ciMatch) { rawPos += ciMatch[0].length; }
+      else { rawPos++; cleanPos++; }
+    }
+    range.setStart(seg.node, Math.min(rawPos, raw.length - 1));
+    range.setEnd(seg.node, Math.min(rawPos + needle.length, raw.length));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (_) { /* highlight is best-effort */ }
+
+  return true;
+}
+
 // Listen for "Back to Source" scroll requests from background
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== 'SCROLL_TO_SOURCE' || !msg.anchor) return;
 
-  function scrollSelectionIntoView() {
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      sel.getRangeAt(0).startContainer.parentElement?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    }
-  }
-
-  // Try progressively shorter slices of the anchor until one is found
   const words = msg.anchor.trim().split(/\s+/);
+  // Try progressively shorter slices so citation mid-sentence noise doesn't break the match
   const attempts = [
     msg.anchor,
     words.slice(0, 10).join(' '),
@@ -47,10 +99,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   for (const attempt of attempts) {
     if (attempt.length < 8) break;
-    if (window.find(attempt, false, false, true, false, true, false)) {
-      scrollSelectionIntoView();
-      return;
-    }
+    if (findAndScrollToAnchor(attempt)) return;
   }
 });
 
