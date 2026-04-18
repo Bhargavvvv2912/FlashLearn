@@ -22,6 +22,38 @@ function extractPageContent() {
   }
 }
 
+// Listen for "Back to Source" scroll requests from background
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== 'SCROLL_TO_SOURCE' || !msg.anchor) return;
+
+  function scrollSelectionIntoView() {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      sel.getRangeAt(0).startContainer.parentElement?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }
+  }
+
+  // Try progressively shorter slices of the anchor until one is found
+  const words = msg.anchor.trim().split(/\s+/);
+  const attempts = [
+    msg.anchor,
+    words.slice(0, 10).join(' '),
+    words.slice(0, 6).join(' '),
+    words.slice(0, 4).join(' '),
+  ];
+
+  for (const attempt of attempts) {
+    if (attempt.length < 8) break;
+    if (window.find(attempt, false, false, true, false, true, false)) {
+      scrollSelectionIntoView();
+      return;
+    }
+  }
+});
+
 document.addEventListener('mouseup', (e) => {
   // Don't react to mouseup events that originated from our own button
   if (btn && btn.contains(e.target)) return;

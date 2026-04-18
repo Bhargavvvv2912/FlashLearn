@@ -79,37 +79,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Scroll to the source anchor in the originating tab
+  // Relay scroll request to the content script already running in that tab
   if (msg.type === 'SCROLL_TO_SOURCE') {
-    chrome.scripting.executeScript({
-      target: { tabId: msg.tabId },
-      func: (anchorText) => {
-        // Use browser's built-in find to locate and highlight the text
-        if (window.find(anchorText, false, false, true, false, true, false)) {
-          const sel = window.getSelection();
-          if (sel && sel.rangeCount > 0) {
-            sel.getRangeAt(0).startContainer.parentElement?.scrollIntoView({
-              behavior: 'smooth',
-              block: 'center',
-            });
-          }
-          return true;
-        }
-        // Fallback: try a shorter prefix (first 8 words)
-        const shortAnchor = anchorText.split(' ').slice(0, 8).join(' ');
-        if (window.find(shortAnchor)) {
-          const sel = window.getSelection();
-          if (sel && sel.rangeCount > 0) {
-            sel.getRangeAt(0).startContainer.parentElement?.scrollIntoView({
-              behavior: 'smooth',
-              block: 'center',
-            });
-          }
-          return true;
-        }
-        return false;
-      },
-      args: [msg.anchor],
+    chrome.tabs.sendMessage(msg.tabId, {
+      type: 'SCROLL_TO_SOURCE',
+      anchor: msg.anchor,
     }).catch(console.error);
     sendResponse({ ok: true });
     return true;

@@ -13,8 +13,8 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {
   loadGraph, upsertNode, mergeEdges, clearGraph,
-  getConnectionCount, getTopConnectedNodes, getIsolatedNodes,
-  type KnowledgeGraph, type KnowledgeNode, type KnowledgeEdge,
+  getTopConnectedNodes, getIsolatedNodes,
+  type KnowledgeGraph,
 } from './lib/knowledgeGraph';
 import type { GlobeNode } from './components/KnowledgeGlobe';
 
@@ -1262,15 +1262,24 @@ export default function Home() {
                   </div>
 
                   {sourceUrl && currentCard?.source_anchor && (
-                    <a
-                      href={`${sourceUrl}#:~:text=${encodeURIComponent(currentCard.source_anchor)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={() => {
+                        if (window.parent !== window) {
+                          // Inside extension iframe — ask sidepanel to scroll the source tab
+                          window.parent.postMessage(
+                            { type: 'FLASHLEARN_GOTO_SOURCE', anchor: currentCard.source_anchor },
+                            '*'
+                          );
+                        } else {
+                          // Standalone web app — open source page in new tab
+                          window.open(sourceUrl, '_blank');
+                        }
+                      }}
                       className="flex items-center gap-1.5 text-[11px] font-black uppercase text-teal-500 hover:text-teal-700 transition-colors border border-teal-200 bg-teal-50 rounded-lg px-2.5 py-1.5"
-                      title={`Jump to: "${currentCard.source_anchor}"`}
+                      title={`Back to: "${currentCard.source_anchor}"`}
                     >
                       <ExternalLink className="w-3 h-3" /> Back to Source
-                    </a>
+                    </button>
                   )}
                 </div>
               )}
