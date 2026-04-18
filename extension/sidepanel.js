@@ -1,4 +1,4 @@
-const APP_URL = 'https://flash-learn-git-v2-haripreethavarurs-projects.vercel.app';
+const APP_URL = 'https://flash-learn-three.vercel.app';
 const frame = document.getElementById('flashlearn-frame');
 
 let storedTabId = null;
