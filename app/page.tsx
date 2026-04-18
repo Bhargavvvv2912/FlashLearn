@@ -1,14 +1,31 @@
 'use client';
 import { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
-  Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink
+  Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink,
+  Globe, Brain, Trash2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import {
+  loadGraph, upsertNode, mergeEdges, clearGraph,
+  getTopConnectedNodes, getIsolatedNodes,
+  type KnowledgeGraph,
+} from './lib/knowledgeGraph';
+import type { GlobeNode } from './components/KnowledgeGlobe';
+
+const KnowledgeGlobe = dynamic(
+  () => import('./components/KnowledgeGlobe'),
+  { ssr: false, loading: () => (
+    <div className="flex-1 flex items-center justify-center text-slate-500 text-sm font-bold">
+      Loading 3D visualization...
+    </div>
+  )}
+);
 
 interface Card {
   id: number;
@@ -26,7 +43,7 @@ interface FlashData {
   cards: Card[];
 }
 
-type ViewMode = 'cards' | 'map' | 'tree' | 'chat';
+type ViewMode = 'cards' | 'map' | 'tree' | 'chat' | 'globe';
 type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
 
 type ChatMessage = { role: 'user' | 'assistant'; text: string };
@@ -89,6 +106,13 @@ export default function Home() {
   const [sourceTitle, setSourceTitle] = useState('');
   const [pageContent, setPageContent] = useState('');
 
+  // v2: knowledge graph & memory
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>({ nodes: [], edges: [] });
+  const [useMemory, setUseMemory] = useState(false);
+  const [globeSelectedNode, setGlobeSelectedNode] = useState<GlobeNode | null>(null);
+  const [connectionsFound, setConnectionsFound] = useState(0);
+  const [showConnectionsToast, setShowConnectionsToast] = useState(false);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem('flashlearn_about', about);
@@ -106,6 +130,11 @@ export default function Home() {
       setTopic(selected.slice(0, 300));
     }
   }, [topic]);
+
+  // Load knowledge graph from localStorage on mount
+  useEffect(() => {
+    setKnowledgeGraph(loadGraph());
+  }, []);
 
   // Receive page context from the extension side panel via postMessage
   useEffect(() => {
@@ -149,6 +178,16 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
+      // Build memory context from top connected nodes if memory mode is on
+      const memoryContext =
+        useMemory && knowledgeGraph.nodes.length > 0
+          ? getTopConnectedNodes(knowledgeGraph, 5).map((n) => ({
+              topic: n.topic,
+              summary: n.summary,
+              connections: n.connCount,
+            }))
+          : undefined;
+
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -160,6 +199,7 @@ export default function Home() {
           context,
           pageContent: pageContent || undefined,
           pageUrl: sourceUrl || undefined,
+          memoryContext,
         }),
       });
       const result = await res.json();
@@ -175,9 +215,47 @@ export default function Home() {
         setView('normal');
         setTreeFocusCardIndex(null);
         setTreeSelectedBranch(null);
-        // reset chat for new learning path
         setChatMessages([]);
         setChatInput('');
+
+        // Use a clean short name for the knowledge graph node
+        // Prefer the page title (e.g. "Semiconductors" from "Semiconductors - Wikipedia")
+        // over the raw selected text which can be an entire paragraph
+        const kgTopicName = sourceTitle
+          ? sourceTitle.replace(/\s*[-–|]\s*(Wikipedia|wiki|article).*$/i, '').trim() || topic.slice(0, 80)
+          : topic.length > 80
+          ? topic.slice(0, 77).trim() + '…'
+          : topic;
+
+        // Save topic to knowledge graph
+        const { graph: updatedGraph, nodeId } = upsertNode(kgTopicName, result.topic_summary || topic);
+        setKnowledgeGraph({ ...updatedGraph });
+
+        // Fire-and-forget: find connections to existing topics
+        const otherNodes = updatedGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
+        if (otherNodes.length > 0) {
+          fetch('/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'find_connections',
+              newTopic: kgTopicName,
+              newSummary: result.topic_summary || topic,
+              existingTopics: otherNodes,
+            }),
+          })
+            .then((r) => r.json())
+            .then((connResult) => {
+              if (connResult.connections?.length > 0) {
+                const finalGraph = mergeEdges(nodeId, connResult.connections);
+                setKnowledgeGraph({ ...finalGraph });
+                setConnectionsFound(connResult.connections.length);
+                setShowConnectionsToast(true);
+                setTimeout(() => setShowConnectionsToast(false), 5000);
+              }
+            })
+            .catch(console.error);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -524,6 +602,31 @@ export default function Home() {
             )}
           </div>
 
+          {/* Memory mode toggle */}
+          {knowledgeGraph.nodes.length > 0 && (
+            <button
+              onClick={() => setUseMemory((v) => !v)}
+              className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
+                useMemory
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-800'
+                  : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300'
+              }`}
+            >
+              <Brain className={`w-4 h-4 shrink-0 ${useMemory ? 'text-indigo-600' : 'text-slate-400'}`} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-black uppercase tracking-widest">
+                  Use Knowledge Memory {useMemory ? '(ON)' : '(OFF)'}
+                </p>
+                <p className="text-[10px] mt-0.5 opacity-70">
+                  Bridge this topic to your {knowledgeGraph.nodes.length} previous topics
+                </p>
+              </div>
+              <div className={`w-8 h-4 rounded-full transition-colors shrink-0 ${useMemory ? 'bg-indigo-500' : 'bg-slate-300'}`}>
+                <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${useMemory ? 'translate-x-4' : 'translate-x-0'}`} />
+              </div>
+            </button>
+          )}
+
           {sourceUrl && (
             <div className="flex items-start gap-3 bg-teal-50 border border-teal-200 rounded-xl p-3">
               <ExternalLink className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" />
@@ -627,6 +730,17 @@ export default function Home() {
               title="Chat"
             >
               <MessageSquare className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => { setViewMode('globe'); setGlobeSelectedNode(null); }}
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+                viewMode === 'globe'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              title="Knowledge Universe"
+            >
+              <Globe className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -1156,16 +1270,23 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {sourceUrl && currentCard?.source_anchor && (
+                  {sourceUrl && (
                     <button
                       onClick={() => {
-                        window.parent.postMessage(
-                          { type: 'FLASHLEARN_GOTO_SOURCE', anchor: currentCard.source_anchor },
-                          '*'
-                        );
+                        const anchor = currentCard?.source_anchor;
+                        if (anchor && window.parent !== window) {
+                          // Inside extension iframe — ask sidepanel to scroll the source tab
+                          window.parent.postMessage(
+                            { type: 'FLASHLEARN_GOTO_SOURCE', anchor },
+                            '*'
+                          );
+                        } else {
+                          // No anchor (LeetCode mode) or standalone — open source page
+                          window.open(sourceUrl, '_blank');
+                        }
                       }}
                       className="flex items-center gap-1.5 text-[11px] font-black uppercase text-teal-500 hover:text-teal-700 transition-colors border border-teal-200 bg-teal-50 rounded-lg px-2.5 py-1.5"
-                      title={`Source: "${currentCard.source_anchor}"`}
+                      title={currentCard?.source_anchor ? `Back to: "${currentCard.source_anchor}"` : `Open source: ${sourceUrl}`}
                     >
                       <ExternalLink className="w-3 h-3" /> Back to Source
                     </button>
@@ -1236,7 +1357,175 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* GLOBE VIEW — Knowledge Universe */}
+        {viewMode === 'globe' && (
+          <div className="fixed inset-0 z-50 bg-slate-900 flex">
+            {/* 3D Globe */}
+            <div className="flex-1 overflow-hidden">
+              {knowledgeGraph.nodes.length === 0 ? (
+                <div className="w-full h-full flex flex-col items-center justify-center text-center p-8 space-y-4">
+                  <Globe className="w-16 h-16 text-slate-600" />
+                  <p className="text-slate-400 font-bold text-lg">Your Knowledge Universe is Empty</p>
+                  <p className="text-slate-500 text-sm max-w-xs">
+                    Generate your first learning path and come back here to watch your knowledge graph grow.
+                  </p>
+                  <button
+                    onClick={() => setViewMode('cards')}
+                    className="mt-4 px-6 py-3 bg-indigo-600 text-white font-black text-sm rounded-2xl hover:bg-indigo-700 transition-colors"
+                  >
+                    Start Learning →
+                  </button>
+                </div>
+              ) : (
+                <KnowledgeGlobe
+                  nodes={knowledgeGraph.nodes}
+                  edges={knowledgeGraph.edges}
+                  onNodeClick={(node) => setGlobeSelectedNode(node)}
+                />
+              )}
+            </div>
+
+            {/* Stats Sidebar */}
+            <div className="w-72 bg-slate-800 border-l border-slate-700 flex flex-col overflow-hidden">
+              <div className="p-5 border-b border-slate-700">
+                <button
+                  onClick={() => setViewMode('cards')}
+                  className="text-slate-400 hover:text-white text-xs font-black uppercase tracking-widest flex items-center gap-1 mb-3 transition-colors"
+                >
+                  <ChevronLeft className="w-3 h-3" /> Back to Cards
+                </button>
+                <h2 className="text-white font-black text-base">Knowledge Universe</h2>
+                <p className="text-slate-400 text-xs mt-1">
+                  {knowledgeGraph.nodes.length} topics · {knowledgeGraph.edges.length} connections
+                </p>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                {/* Colour legend */}
+                <div className="space-y-1.5">
+                  <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Node Legend</p>
+                  {[
+                    { color: '#f59e0b', label: 'Mastered', desc: '3+ studies or 4+ connections' },
+                    { color: '#818cf8', label: 'Connected', desc: '2+ connections' },
+                    { color: '#22d3ee', label: 'Learning', desc: 'New, few connections' },
+                    { color: '#475569', label: 'Isolated', desc: 'No connections yet' },
+                  ].map(({ color, label, desc }) => (
+                    <div key={label} className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
+                      <span className="text-slate-300 text-xs font-bold">{label}</span>
+                      <span className="text-slate-500 text-[10px]">— {desc}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Selected node detail */}
+                {globeSelectedNode && (
+                  <div className="bg-slate-700 rounded-2xl p-4 space-y-2">
+                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Selected Topic</p>
+                    <p className="text-white font-black text-sm">{globeSelectedNode.topic}</p>
+                    <p className="text-slate-400 text-xs leading-relaxed">{globeSelectedNode.summary}</p>
+                    <div className="flex gap-3 pt-1">
+                      <span className="text-xs text-slate-300">
+                        <span className="font-black text-white">{globeSelectedNode.connections}</span> connections
+                      </span>
+                      <span className="text-xs text-slate-300">
+                        Studied <span className="font-black text-white">{globeSelectedNode.timesStudied}×</span>
+                      </span>
+                    </div>
+                    {/* Show edges from this node */}
+                    {knowledgeGraph.edges
+                      .filter((e) => e.source === globeSelectedNode.id || e.target === globeSelectedNode.id)
+                      .slice(0, 3)
+                      .map((e, i) => {
+                        const otherId = e.source === globeSelectedNode.id ? e.target : e.source;
+                        const other = knowledgeGraph.nodes.find((n) => n.id === otherId);
+                        return (
+                          <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
+                            <span className="text-indigo-400 font-bold">{other?.topic}</span> — {e.bridge}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+
+                {/* Strongest connections */}
+                {knowledgeGraph.edges.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Strongest Connections</p>
+                    {[...knowledgeGraph.edges]
+                      .sort((a, b) => b.weight - a.weight)
+                      .slice(0, 4)
+                      .map((e, i) => {
+                        const src = knowledgeGraph.nodes.find((n) => n.id === e.source);
+                        const tgt = knowledgeGraph.nodes.find((n) => n.id === e.target);
+                        return (
+                          <div key={i} className="bg-slate-700/60 rounded-xl p-3 space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <div className="h-1 rounded-full bg-amber-400" style={{ width: `${Math.round(e.weight * 100)}%`, minWidth: '20%' }} />
+                              <span className="text-[10px] text-slate-400">{Math.round(e.weight * 100)}%</span>
+                            </div>
+                            <p className="text-xs text-slate-300 font-bold line-clamp-2">
+                              {src?.topic.slice(0, 60)}{(src?.topic.length ?? 0) > 60 ? '…' : ''}{' '}
+                              <span className="text-slate-500">↔</span>{' '}
+                              {tgt?.topic.slice(0, 60)}{(tgt?.topic.length ?? 0) > 60 ? '…' : ''}
+                            </p>
+                            <p className="text-[10px] text-slate-500 leading-snug">{e.bridge}</p>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+
+                {/* Knowledge gaps */}
+                {getIsolatedNodes(knowledgeGraph).length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Knowledge Gaps</p>
+                    <p className="text-slate-500 text-[10px]">These topics have no connections yet. Try learning something related.</p>
+                    {getIsolatedNodes(knowledgeGraph).map((n) => (
+                      <div key={n.id} className="flex items-center gap-2 px-3 py-2 bg-slate-700/40 rounded-xl">
+                        <div className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
+                        <span className="text-slate-300 text-xs font-bold truncate">{n.topic}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Clear graph */}
+              <div className="p-4 border-t border-slate-700">
+                <button
+                  onClick={() => {
+                    if (confirm('Clear your entire knowledge graph? This cannot be undone.')) {
+                      clearGraph();
+                      setKnowledgeGraph({ nodes: [], edges: [] });
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-slate-500 hover:text-red-400 hover:bg-slate-700 transition-colors text-xs font-black uppercase tracking-widest"
+                >
+                  <Trash2 className="w-3 h-3" /> Clear Graph
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Connections discovered toast */}
+      {showConnectionsToast && connectionsFound > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-indigo-600 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
+          <Sparkles className="w-4 h-4 shrink-0" />
+          <span className="text-sm font-bold">
+            {connectionsFound} knowledge connection{connectionsFound > 1 ? 's' : ''} discovered!
+          </span>
+          <button
+            onClick={() => { setViewMode('globe'); setShowConnectionsToast(false); }}
+            className="text-indigo-200 hover:text-white text-xs font-black underline underline-offset-2 shrink-0"
+          >
+            View graph →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

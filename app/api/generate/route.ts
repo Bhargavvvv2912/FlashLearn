@@ -27,7 +27,6 @@ function extractJsonArray(text: string) {
 
 function safeJsonParse(jsonText: string) {
   const cleaned = jsonText.trim();
-
   try {
     return JSON.parse(cleaned);
   } catch (firstError) {
@@ -43,11 +42,29 @@ function safeJsonParse(jsonText: string) {
   }
 }
 
+/** Detect if the topic looks like a LeetCode / algorithm problem */
+function isCodeProblem(topic: string): boolean {
+  const patterns = [
+    /\bleetcode\b/i,
+    /\balgorithm\b/i,
+    /\bdata structure\b/i,
+    /\bbinary (search|tree)\b/i,
+    /\bdynamic programming\b/i,
+    /\bbacktracking\b/i,
+    /\b(bfs|dfs|graph traversal)\b/i,
+    /\blinked list\b/i,
+    /\bhash\s*(map|table|set)\b/i,
+    /\btwo pointer\b/i,
+    /\bsliding window\b/i,
+    /\btime complexity\b/i,
+    /o\s*\(\s*n/i,
+    /#\s*\d+/,
+  ];
+  return patterns.some((p) => p.test(topic));
+}
+
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: corsHeaders,
-  });
+  return new NextResponse(null, { status: 200, headers: corsHeaders });
 }
 
 export async function POST(req: Request) {
@@ -67,10 +84,15 @@ export async function POST(req: Request) {
       chatHistory,
       pageContent,
       pageUrl,
+      memoryContext,   // Array<{topic, summary, connections}> when "Use Memory" is on
+      newTopic,        // for find_connections action
+      newSummary,      // for find_connections action
+      existingTopics,  // for find_connections action
     } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
+    // ── REFINE ACTIONS ─────────────────────────────────────────────────────────
     if (action === 'drill' || action === 'simplify' || action === 'example') {
       let task = '';
       if (action === 'drill') task = 'Give a deeper technical explanation. Max 5 bullet points, no fluff.';
@@ -84,28 +106,28 @@ Task: ${task}
 
 Return ONLY a JSON object: {"newContent": "..."}
 `;
-
       const result = await model.generateContent(refinePrompt);
-      const text = result.response.text();
-      const parsed = safeJsonParse(extractJsonObject(text));
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      return NextResponse.json(parsed, { headers: corsHeaders });
+    }
 
-      return NextResponse.json(parsed, {
-        headers: corsHeaders,
-      });
-    } else if (action === 'regenerate_weak') {
-      const weakList = (weakCards || []).map((c: { id: number; title: string; content: string }) =>
-        `Card ${c.id}: "${c.title}"\nOriginal explanation: ${c.content}`
-      ).join('\n\n');
+    // ── REGENERATE WEAK ────────────────────────────────────────────────────────
+    if (action === 'regenerate_weak') {
+      const weakList = (weakCards || [])
+        .map((c: { id: number; title: string; content: string }) =>
+          `Card ${c.id}: "${c.title}"\nOriginal explanation: ${c.content}`
+        )
+        .join('\n\n');
 
       const regenPrompt = `
-The learner did NOT understand the following concepts. You must re-explain them using a COMPLETELY DIFFERENT approach.
+The learner did NOT understand the following concepts. Re-explain them using a COMPLETELY DIFFERENT approach.
 
 STRICT RULES:
-- DO NOT repeat any phrasing, analogies, or examples from the original explanation
-- Use a brand new metaphor or real-world scenario they have never seen
-- Start from a more basic entry point — assume they know nothing about this specific concept
+- DO NOT repeat any phrasing, analogies, or examples from the original
+- Use a brand new metaphor or real-world scenario
+- Start from a more basic entry point
 - Be more concrete and visual
-- Maximum 3 sentences for content, 2 sentences for simpler, 5 lines for detailed
+- Max 3 sentences for content, 2 for simpler, 5 lines for detailed
 
 Background: ${about || 'General curious learner'}. Persona: ${persona}. Context: ${context || 'None'}.
 
@@ -115,82 +137,140 @@ Return ONLY a raw JSON array:
 [
   {
     "id": <same id as input>,
-    "hook": "A new fascinating angle on this concept...",
-    "content": "Fresh explanation from scratch...",
-    "simpler": "Brand new analogy...",
-    "detailed": "Different technical framing...",
-    "visual": "New ASCII/table/code..."
+    "hook": "...", "content": "...", "simpler": "...", "detailed": "...", "visual": "..."
   }
 ]
 `;
-
       const result = await model.generateContent(regenPrompt);
-      const text = result.response.text();
-      const parsed = safeJsonParse(extractJsonArray(text));
+      const parsed = safeJsonParse(extractJsonArray(result.response.text()));
+      return NextResponse.json({ regenerated: parsed }, { headers: corsHeaders });
+    }
 
-      return NextResponse.json(
-        { regenerated: parsed },
-        { headers: corsHeaders }
-      );
-    } else if (action === 'chat') {
+    // ── CHAT ───────────────────────────────────────────────────────────────────
+    if (action === 'chat') {
       const historyText = (chatHistory || [])
         .map((m: { role: string; text: string }) => `${m.role.toUpperCase()}: ${m.text}`)
         .join('\n');
 
       const chatPrompt = `
-You are a concise tutor helping a learner understand a topic using ONLY the provided learning path.
+You are a concise tutor grounded in the learner's current study session.
 
-STRICT RULES:
+RULES:
 - Stay grounded in the topic summary and cards below
-- Prefer re-explaining, connecting, simplifying, or comparing existing cards
-- When connecting two cards, clearly say whether the relation is:
-  1) direct part of the equation/concept,
-  2) an assumption behind it, or
-  3) a real-world limitation
-- Do not blur assumptions with core definitions
-- Do not introduce lots of new concepts unless the user explicitly asks
-- Keep the answer under 120 words
-- Be clear and supportive, not verbose
+- Keep answer under 120 words
+- When connecting two cards, label the link as: core concept / assumption / limitation
 
-Learner background: ${about || 'General learner'}
-Persona: ${persona}
-Difficulty: ${difficulty}
-Context: ${context || 'None'}
+Learner: ${about || 'General learner'} | Persona: ${persona} | Difficulty: ${difficulty}
+Topic: ${topic} — ${topicSummary}
+Cards: ${JSON.stringify(cards, null, 2)}
+Chat so far: ${historyText || 'None'}
+Question: ${question}
 
-Topic: ${topic}
-Topic summary: ${topicSummary}
-
-Cards:
-${JSON.stringify(cards, null, 2)}
-
-Previous chat:
-${historyText || 'None'}
-
-User question:
-${question}
-
-Return ONLY a JSON object:
-{"reply": "..."}
+Return ONLY: {"reply": "..."}
 `;
-
       const result = await model.generateContent(chatPrompt);
-      const text = result.response.text();
-      const parsed = safeJsonParse(extractJsonObject(text));
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      return NextResponse.json(parsed, { headers: corsHeaders });
+    }
 
-      return NextResponse.json(parsed, {
-        headers: corsHeaders,
-      });
-    } else {
-      const hasSourceContent = pageContent && pageContent.trim().length > 200;
+    // ── FIND CONNECTIONS (Knowledge Graph) ────────────────────────────────────
+    if (action === 'find_connections') {
+      if (!existingTopics || existingTopics.length === 0) {
+        return NextResponse.json({ connections: [] }, { headers: corsHeaders });
+      }
 
-      let systemPrompt: string;
+      const topicList = (existingTopics as Array<{ topic: string; summary: string }>)
+        .map((t, i) => `${i + 1}. ${t.topic} — ${t.summary}`)
+        .join('\n');
 
-      if (hasSourceContent) {
-        // Source-grounded generation: cards must come ONLY from the provided page content
-        systemPrompt = `
-System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
-You are given webpage content below. Your task is to extract and condense it into exactly 7 flashcards.
-You MUST only use information present in the SOURCE CONTENT — do NOT hallucinate or add external knowledge.
+      const connectionPrompt = `
+You are a knowledge graph builder. A learner just studied a new topic. Find genuine intellectual connections to their existing knowledge.
+
+New topic: "${newTopic}"
+New topic summary: "${newSummary}"
+
+Learner's existing topics:
+${topicList}
+
+RULES:
+- Only include real intellectual connections: shared principles, mathematical links, cause-effect, historical relationship, analogous structures.
+- Skip surface-level or superficial connections.
+- Rate strength 1–10. Only return connections with strength ≥ 4.
+- "bridge" must be one precise sentence explaining HOW they connect.
+
+Return ONLY valid JSON:
+{
+  "connections": [
+    {
+      "existingTopic": "exact name from the list above",
+      "strength": 8,
+      "bridge": "Both fluid dynamics and thermodynamics describe energy transfer through a medium using differential equations."
+    }
+  ]
+}
+`;
+      const result = await model.generateContent(connectionPrompt);
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      return NextResponse.json(parsed, { headers: corsHeaders });
+    }
+
+    // ── GENERATE CARDS (main action) ──────────────────────────────────────────
+    const hasSourceContent = pageContent && pageContent.trim().length > 200;
+    const isCode = isCodeProblem(topic || '');
+
+    // Memory prefix: bridge new topic to what the learner already knows
+    const memoryPrefix =
+      memoryContext && memoryContext.length > 0
+        ? `LEARNER MEMORY — use this to bridge concepts naturally:
+${(memoryContext as Array<{ topic: string; summary: string; connections: number }>)
+  .map((m) => `• ${m.topic} (${m.connections} connections): ${m.summary}`)
+  .join('\n')}
+When teaching this topic, actively connect it to the above. Say things like "Just like you learned with [past topic]..." or "This builds on your knowledge of [past topic]..."\n\n`
+        : '';
+
+    let systemPrompt: string;
+
+    if (isCode) {
+      // ── LeetCode / Algorithm mode ──────────────────────────────────────────
+      systemPrompt = `
+${memoryPrefix}System: Elite software engineer and coding interview coach. Background: ${about}. Persona: ${persona}.
+Task: Break this coding problem/concept into exactly 7 structured cards: "${topic}"
+
+MANDATORY CARD ORDER:
+Card 1 — "Problem Breakdown": Restate clearly. Inputs, outputs, constraints. What makes this hard?
+Card 2 — "Test Cases": 3 examples including at least 2 edge cases (empty, single, max size, negatives, duplicates).
+Card 3 — "Brute Force": The naive approach. Time/space complexity. When would you actually use it?
+Card 4 — "Optimal Approach": Best algorithm + data structure. Why is it better? Key insight that unlocks it.
+Card 5 — "Functions to Build": Exact function signatures the developer must implement. Pseudocode stubs.
+Card 6 — "Step-by-Step Solution": Annotated code (Python or language-agnostic pseudocode) for the optimal approach.
+Card 7 — "Pitfalls & Debugging": Top 3 mistakes developers make. Off-by-one errors, edge cases missed, wrong complexity claim.
+
+CONSTRAINTS per card:
+- "hook": Why this problem/pattern matters in real production systems (not just interviews). One sentence.
+- "content": Human-language explanation of the key idea. 3 sentences max.
+- "simpler": Everyday analogy for the algorithm or data structure. Max 2 sentences.
+- "detailed": Time complexity, space complexity, when to use this pattern. Bullet points.
+- "visual": ASCII diagram of the data structure, recursion tree, or sliding window — max 6 lines.
+- Difficulty: ${difficulty}. Context: ${context || 'None'}
+
+Return ONLY valid JSON with the standard card schema.
+
+{
+  "topic_summary": "One-sentence problem statement",
+  "cards": [
+    {
+      "id": 1,
+      "title": "Short Header",
+      "hook": "...", "content": "...", "simpler": "...", "detailed": "...", "visual": "..."
+    }
+  ]
+}
+`;
+    } else if (hasSourceContent) {
+      // ── Source-grounded mode (extension on a webpage) ──────────────────────
+      systemPrompt = `
+${memoryPrefix}System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
+You are given webpage content. Create exactly 7 flashcards using ONLY information from the SOURCE CONTENT — do NOT add external knowledge.
 
 SOURCE URL: ${pageUrl || 'provided webpage'}
 SOURCE CONTENT:
@@ -198,93 +278,68 @@ SOURCE CONTENT:
 ${pageContent.slice(0, 15000)}
 >>>
 
-Task: Create 7 flashcards covering the key concepts from the above source about "${topic}".
+Task: 7 flashcards covering key concepts from the above source about "${topic}".
 
 STRICT CONSTRAINTS:
-- ONLY use facts from the SOURCE CONTENT above. If something is not in the source, do not include it.
-- "hook": One sentence — why this specific concept (as found in the source) is fascinating or surprising.
-- "content": Explain as if to a curious friend. 3 sentences max. Source-only information.
-- "simpler": One clear analogy (max 2 sentences).
-- "detailed": Technical depth from the source. Bullet points, max 5 lines. Equations welcome.
-- "visual": ASCII diagram, table, or code snippet based on source info (max 6 lines).
-- "source_anchor": A verbatim short quote (10–20 words) copied exactly from the source text that this card is directly based on. No citation numbers like [1]. This anchors the card to the source and prevents hallucination.
+- ONLY use facts from the SOURCE CONTENT. If something is not in the source, do not include it.
+- "hook": One sentence — why this specific concept (as found in the source) is fascinating.
+- "content": Explain as if to a curious friend. 3 sentences max. Source-only.
+- "simpler": One clear analogy. Max 2 sentences.
+- "detailed": Technical depth from the source. Bullet points, max 5 lines.
+- "visual": ASCII diagram or table from source information. Max 6 lines.
+- "source_anchor": A verbatim short quote (10–20 words) copied exactly from the source text this card is based on. No citation numbers.
 - Difficulty: ${difficulty}. Context: ${context || 'None'}
 
-IMPORTANT:
-- Escape backslashes properly.
-- Do not include raw LaTeX with single backslashes unless escaped for JSON.
-- Return ONLY valid JSON.
+Return ONLY valid JSON:
 
 {
   "topic_summary": "1-sentence overview based on the source",
   "cards": [
     {
-      "id": 1,
-      "title": "Short Header",
-      "hook": "Why this is fascinating (from source)...",
-      "content": "Explanation from source...",
-      "simpler": "Analogy here...",
-      "detailed": "Technical details from source...",
-      "visual": "ASCII / table / code here...",
-      "source_anchor": "Exact short quote from source text without citation numbers..."
+      "id": 1, "title": "...", "hook": "...", "content": "...",
+      "simpler": "...", "detailed": "...", "visual": "...",
+      "source_anchor": "Exact short quote from source..."
     }
   ]
 }
 `;
-      } else {
-        // Standard generation from general knowledge
-        systemPrompt = `
-System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
+    } else {
+      // ── Standard mode ──────────────────────────────────────────────────────
+      systemPrompt = `
+${memoryPrefix}System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
 Task: Break down "${topic}" into 7 cards.
 
 STRICT CONSTRAINTS:
 - "hook": One sentence — why this topic is fascinating or surprising. Must spark curiosity.
-- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations — save those for detailed. Start with something concrete or surprising, not a definition.
+- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations here. Start with something concrete or surprising.
 - "simpler": One punchy, clear analogy (max 2 sentences).
-- "detailed": Maximum 5 lines of technical explanation. Use bullet points. Equations are welcome here.
-- "visual": A simple ASCII diagram, table, or short code snippet (max 6 lines).
-- If the answer cannot be supported clearly from the provided cards, say that briefly instead of guessing.
-- For "connect X and Y" questions, answer in 2 parts: "Direct link" and "Caveat"s/limitations.
+- "detailed": Maximum 5 lines of technical explanation. Bullet points. Equations welcome.
+- "visual": ASCII diagram, table, or short code snippet (max 6 lines).
 - Difficulty: ${difficulty}. Context: ${context || 'None'}
 
-IMPORTANT:
-- Escape backslashes properly.
-- Do not include raw LaTeX with single backslashes unless escaped for JSON.
-- Return ONLY valid JSON.
+IMPORTANT: Escape backslashes properly. Return ONLY valid JSON.
 
 {
   "topic_summary": "1-sentence overview",
   "cards": [
     {
-      "id": 1,
-      "title": "Short Header",
-      "hook": "Why this is fascinating...",
-      "content": "Curious-friend explanation here...",
-      "simpler": "Analogy here...",
-      "detailed": "Technical details + equations here...",
-      "visual": "ASCII / table / code here..."
+      "id": 1, "title": "Short Header",
+      "hook": "...", "content": "...", "simpler": "...", "detailed": "...", "visual": "..."
     }
   ]
 }
 `;
-      }
-
-      const result = await model.generateContent(systemPrompt);
-      const text = result.response.text();
-      const parsed = safeJsonParse(extractJsonObject(text));
-
-      return NextResponse.json(parsed, {
-        headers: corsHeaders,
-      });
     }
+
+    const result = await model.generateContent(systemPrompt);
+    const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+    return NextResponse.json(parsed, { headers: corsHeaders });
+
   } catch (e: any) {
     console.error("Gemini API Error:", e);
     return NextResponse.json(
       { error: e.message || "Failed to generate content" },
-      {
-        status: 500,
-        headers: corsHeaders,
-      }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
