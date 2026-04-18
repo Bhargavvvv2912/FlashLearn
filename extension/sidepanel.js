@@ -1,18 +1,64 @@
-const APP_URL = 'https://flash-learn-three.vercel.app';
+const APP_URL = 'https://flash-learn-smoky.vercel.app';
 const frame = document.getElementById('flashlearn-frame');
 
-frame.addEventListener('load', () => {
-  // Nothing here now
-});
+let storedTabId = null;
+let pendingContext = null;
 
-// Every time the side panel opens, set the iframe src based on stored text
-chrome.storage.local.get(['selectedText'], (result) => {
-  const text = result.selectedText?.trim();
-  if (text) {
-    const url = `${APP_URL}/?selectedText=${encodeURIComponent(text)}`;
-    frame.src = url;
-    chrome.storage.local.remove('selectedText');
-  } else {
-    frame.src = APP_URL;
+// After iframe finishes loading, send the page context via postMessage
+frame.addEventListener('load', () => {
+  if (pendingContext) {
+    // Small delay ensures React has fully hydrated
+    setTimeout(() => {
+      frame.contentWindow.postMessage(pendingContext, APP_URL);
+      pendingContext = null;
+    }, 150);
   }
 });
+
+// Listen for "Back to Source" requests from the iframe
+window.addEventListener('message', (event) => {
+  if (event.origin !== APP_URL) return;
+  if (event.data?.type === 'FLASHLEARN_GOTO_SOURCE') {
+    const { anchor } = event.data;
+    if (storedTabId && anchor) {
+      chrome.runtime.sendMessage({
+        type: 'SCROLL_TO_SOURCE',
+        tabId: storedTabId,
+        anchor,
+      });
+    }
+  }
+});
+
+// Read all stored context and set the iframe src
+chrome.storage.local.get(
+  ['selectedText', 'pageUrl', 'pageTitle', 'pageContent', 'tabId'],
+  (result) => {
+    storedTabId = result.tabId || null;
+    const text = result.selectedText?.trim();
+
+    // Prepare context payload to be sent after iframe loads
+    if (result.pageContent || result.pageUrl) {
+      pendingContext = {
+        type: 'FLASHLEARN_CONTEXT',
+        pageContent: result.pageContent || '',
+        pageUrl: result.pageUrl || '',
+        pageTitle: result.pageTitle || '',
+      };
+    }
+
+    if (text) {
+      frame.src = `${APP_URL}/?selectedText=${encodeURIComponent(text)}`;
+    } else {
+      frame.src = APP_URL;
+    }
+
+    chrome.storage.local.remove([
+      'selectedText',
+      'pageUrl',
+      'pageTitle',
+      'pageContent',
+      'tabId',
+    ]);
+  }
+);

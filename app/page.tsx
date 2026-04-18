@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
-  Plus, Minus, Terminal, Lightbulb, GitBranch
+  Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
@@ -18,6 +18,7 @@ interface Card {
   simpler: string | string[];
   detailed: string | string[];
   visual: string | string[];
+  source_anchor?: string;
 }
 
 interface FlashData {
@@ -83,6 +84,11 @@ export default function Home() {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
 
+  // source page context (injected by extension via postMessage)
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [sourceTitle, setSourceTitle] = useState('');
+  const [pageContent, setPageContent] = useState('');
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem('flashlearn_about', about);
@@ -100,6 +106,19 @@ export default function Home() {
       setTopic(selected.slice(0, 300));
     }
   }, [topic]);
+
+  // Receive page context from the extension side panel via postMessage
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'FLASHLEARN_CONTEXT') {
+        if (event.data.pageContent) setPageContent(event.data.pageContent);
+        if (event.data.pageUrl) setSourceUrl(event.data.pageUrl);
+        if (event.data.pageTitle) setSourceTitle(event.data.pageTitle);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   const getActivePersona = () => (useCustomPersona ? customPersona : persona);
   const CARD_COUNT = data?.cards?.length ?? 7;
@@ -139,6 +158,8 @@ export default function Home() {
           persona: getActivePersona(),
           difficulty,
           context,
+          pageContent: pageContent || undefined,
+          pageUrl: sourceUrl || undefined,
         }),
       });
       const result = await res.json();
@@ -502,6 +523,21 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {sourceUrl && (
+            <div className="flex items-start gap-3 bg-teal-50 border border-teal-200 rounded-xl p-3">
+              <ExternalLink className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-black text-teal-600 uppercase tracking-widest mb-0.5">
+                  Generating from webpage
+                </p>
+                <p className="text-xs font-bold text-teal-800 truncate">
+                  {sourceTitle || sourceUrl}
+                </p>
+                <p className="text-[10px] text-teal-500 truncate mt-0.5">{sourceUrl}</p>
+              </div>
+            </div>
+          )}
 
           <button
             onClick={generateCards}
@@ -1089,34 +1125,51 @@ export default function Home() {
               </div>
 
               {!refinement && !isRefining && !isRegenerating && (
-                <div className="flex items-center gap-4 flex-wrap">
-                  <button
-                    onClick={() => handleRefine('simplify')}
-                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors"
-                  >
-                    <MessageSquare className="w-3 h-3" /> Simplify
-                  </button>
-                  <button
-                    onClick={() => handleRefine('example')}
-                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors"
-                  >
-                    <Lightbulb className="w-3 h-3" /> Real Example
-                  </button>
-                  <button
-                    onClick={() => handleRefine('drill')}
-                    className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
-                  >
-                    <BrainCircuit className="w-3 h-3" /> Drill Deeper
-                  </button>
-                  <div className="ml-auto">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-4 flex-wrap">
                     <button
-                      onClick={handleRegenerateCard}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors"
-                      title="Re-explain this card with a completely different approach"
+                      onClick={() => handleRefine('simplify')}
+                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors"
                     >
-                      <RefreshCcw className="w-3 h-3" /> Re-explain
+                      <MessageSquare className="w-3 h-3" /> Simplify
                     </button>
+                    <button
+                      onClick={() => handleRefine('example')}
+                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors"
+                    >
+                      <Lightbulb className="w-3 h-3" /> Real Example
+                    </button>
+                    <button
+                      onClick={() => handleRefine('drill')}
+                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
+                    >
+                      <BrainCircuit className="w-3 h-3" /> Drill Deeper
+                    </button>
+                    <div className="ml-auto">
+                      <button
+                        onClick={handleRegenerateCard}
+                        className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors"
+                        title="Re-explain this card with a completely different approach"
+                      >
+                        <RefreshCcw className="w-3 h-3" /> Re-explain
+                      </button>
+                    </div>
                   </div>
+
+                  {sourceUrl && currentCard?.source_anchor && (
+                    <button
+                      onClick={() => {
+                        window.parent.postMessage(
+                          { type: 'FLASHLEARN_GOTO_SOURCE', anchor: currentCard.source_anchor },
+                          '*'
+                        );
+                      }}
+                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-teal-500 hover:text-teal-700 transition-colors border border-teal-200 bg-teal-50 rounded-lg px-2.5 py-1.5"
+                      title={`Source: "${currentCard.source_anchor}"`}
+                    >
+                      <ExternalLink className="w-3 h-3" /> Back to Source
+                    </button>
+                  )}
                 </div>
               )}
             </div>

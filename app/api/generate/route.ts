@@ -65,6 +65,8 @@ export async function POST(req: Request) {
       topicSummary,
       question,
       chatHistory,
+      pageContent,
+      pageUrl,
     } = await req.json();
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -179,7 +181,59 @@ Return ONLY a JSON object:
         headers: corsHeaders,
       });
     } else {
-      const systemPrompt = `
+      const hasSourceContent = pageContent && pageContent.trim().length > 200;
+
+      let systemPrompt: string;
+
+      if (hasSourceContent) {
+        // Source-grounded generation: cards must come ONLY from the provided page content
+        systemPrompt = `
+System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
+You are given webpage content below. Your task is to extract and condense it into exactly 7 flashcards.
+You MUST only use information present in the SOURCE CONTENT — do NOT hallucinate or add external knowledge.
+
+SOURCE URL: ${pageUrl || 'provided webpage'}
+SOURCE CONTENT:
+<<<
+${pageContent.slice(0, 15000)}
+>>>
+
+Task: Create 7 flashcards covering the key concepts from the above source about "${topic}".
+
+STRICT CONSTRAINTS:
+- ONLY use facts from the SOURCE CONTENT above. If something is not in the source, do not include it.
+- "hook": One sentence — why this specific concept (as found in the source) is fascinating or surprising.
+- "content": Explain as if to a curious friend. 3 sentences max. Source-only information.
+- "simpler": One clear analogy (max 2 sentences).
+- "detailed": Technical depth from the source. Bullet points, max 5 lines. Equations welcome.
+- "visual": ASCII diagram, table, or code snippet based on source info (max 6 lines).
+- "source_anchor": A verbatim short quote (10–20 words) copied exactly from the source text that this card is directly based on. No citation numbers like [1]. This anchors the card to the source and prevents hallucination.
+- Difficulty: ${difficulty}. Context: ${context || 'None'}
+
+IMPORTANT:
+- Escape backslashes properly.
+- Do not include raw LaTeX with single backslashes unless escaped for JSON.
+- Return ONLY valid JSON.
+
+{
+  "topic_summary": "1-sentence overview based on the source",
+  "cards": [
+    {
+      "id": 1,
+      "title": "Short Header",
+      "hook": "Why this is fascinating (from source)...",
+      "content": "Explanation from source...",
+      "simpler": "Analogy here...",
+      "detailed": "Technical details from source...",
+      "visual": "ASCII / table / code here...",
+      "source_anchor": "Exact short quote from source text without citation numbers..."
+    }
+  ]
+}
+`;
+      } else {
+        // Standard generation from general knowledge
+        systemPrompt = `
 System: Expert adaptive tutor. Background: ${about}. Persona: ${persona}.
 Task: Break down "${topic}" into 7 cards.
 
@@ -190,7 +244,7 @@ STRICT CONSTRAINTS:
 - "detailed": Maximum 5 lines of technical explanation. Use bullet points. Equations are welcome here.
 - "visual": A simple ASCII diagram, table, or short code snippet (max 6 lines).
 - If the answer cannot be supported clearly from the provided cards, say that briefly instead of guessing.
-- For “connect X and Y” questions, answer in 2 parts: “Direct link” and “Caveat”s/limitations.
+- For "connect X and Y" questions, answer in 2 parts: "Direct link" and "Caveat"s/limitations.
 - Difficulty: ${difficulty}. Context: ${context || 'None'}
 
 IMPORTANT:
@@ -213,6 +267,7 @@ IMPORTANT:
   ]
 }
 `;
+      }
 
       const result = await model.generateContent(systemPrompt);
       const text = result.response.text();
