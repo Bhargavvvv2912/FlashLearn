@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       existingTopics,  // for find_connections action
     } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     // ── REFINE ACTIONS ─────────────────────────────────────────────────────────
     if (action === 'drill' || action === 'simplify' || action === 'example') {
