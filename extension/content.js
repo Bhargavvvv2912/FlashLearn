@@ -53,6 +53,14 @@ document.addEventListener('mouseup', (e) => {
     // Capture selected text now — it'll be cleared by the time onclick fires
     const captured = text;
     btn.onclick = () => {
+      // chrome.runtime becomes undefined if the extension was reloaded
+      // without refreshing this page — handle it gracefully
+      if (!chrome?.runtime?.id) {
+        btn.innerText = '↻ Refresh page first';
+        btn.style.background = '#dc2626';
+        setTimeout(() => location.reload(), 1200);
+        return;
+      }
       const pageContent = extractPageContent();
       chrome.runtime.sendMessage({
         type: 'OPEN_PANEL',
