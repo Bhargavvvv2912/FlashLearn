@@ -218,8 +218,17 @@ export default function Home() {
         setChatMessages([]);
         setChatInput('');
 
+        // Use a clean short name for the knowledge graph node
+        // Prefer the page title (e.g. "Semiconductors" from "Semiconductors - Wikipedia")
+        // over the raw selected text which can be an entire paragraph
+        const kgTopicName = sourceTitle
+          ? sourceTitle.replace(/\s*[-–|]\s*(Wikipedia|wiki|article).*$/i, '').trim() || topic.slice(0, 80)
+          : topic.length > 80
+          ? topic.slice(0, 77).trim() + '…'
+          : topic;
+
         // Save topic to knowledge graph
-        const { graph: updatedGraph, nodeId } = upsertNode(topic, result.topic_summary || topic);
+        const { graph: updatedGraph, nodeId } = upsertNode(kgTopicName, result.topic_summary || topic);
         setKnowledgeGraph({ ...updatedGraph });
 
         // Fire-and-forget: find connections to existing topics
@@ -230,7 +239,7 @@ export default function Home() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'find_connections',
-              newTopic: topic,
+              newTopic: kgTopicName,
               newSummary: result.topic_summary || topic,
               existingTopics: otherNodes,
             }),
@@ -1261,22 +1270,23 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {sourceUrl && currentCard?.source_anchor && (
+                  {sourceUrl && (
                     <button
                       onClick={() => {
-                        if (window.parent !== window) {
+                        const anchor = currentCard?.source_anchor;
+                        if (anchor && window.parent !== window) {
                           // Inside extension iframe — ask sidepanel to scroll the source tab
                           window.parent.postMessage(
-                            { type: 'FLASHLEARN_GOTO_SOURCE', anchor: currentCard.source_anchor },
+                            { type: 'FLASHLEARN_GOTO_SOURCE', anchor },
                             '*'
                           );
                         } else {
-                          // Standalone web app — open source page in new tab
+                          // No anchor (LeetCode mode) or standalone — open source page
                           window.open(sourceUrl, '_blank');
                         }
                       }}
                       className="flex items-center gap-1.5 text-[11px] font-black uppercase text-teal-500 hover:text-teal-700 transition-colors border border-teal-200 bg-teal-50 rounded-lg px-2.5 py-1.5"
-                      title={`Back to: "${currentCard.source_anchor}"`}
+                      title={currentCard?.source_anchor ? `Back to: "${currentCard.source_anchor}"` : `Open source: ${sourceUrl}`}
                     >
                       <ExternalLink className="w-3 h-3" /> Back to Source
                     </button>
@@ -1455,8 +1465,10 @@ export default function Home() {
                               <div className="h-1 rounded-full bg-amber-400" style={{ width: `${Math.round(e.weight * 100)}%`, minWidth: '20%' }} />
                               <span className="text-[10px] text-slate-400">{Math.round(e.weight * 100)}%</span>
                             </div>
-                            <p className="text-xs text-slate-300 font-bold">
-                              {src?.topic} <span className="text-slate-500">↔</span> {tgt?.topic}
+                            <p className="text-xs text-slate-300 font-bold line-clamp-2">
+                              {src?.topic.slice(0, 60)}{(src?.topic.length ?? 0) > 60 ? '…' : ''}{' '}
+                              <span className="text-slate-500">↔</span>{' '}
+                              {tgt?.topic.slice(0, 60)}{(tgt?.topic.length ?? 0) > 60 ? '…' : ''}
                             </p>
                             <p className="text-[10px] text-slate-500 leading-snug">{e.bridge}</p>
                           </div>

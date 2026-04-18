@@ -78,7 +78,7 @@ document.addEventListener('mouseup', (e) => {
     }
 
     const range = selection.getRangeAt(0).getBoundingClientRect();
-    btn.style.top = `${range.top + window.scrollY - 40}px`;
+    btn.style.top = `${range.top - 40}px`;
     btn.style.left = `${range.left}px`;
     btn.style.display = 'block';
 
