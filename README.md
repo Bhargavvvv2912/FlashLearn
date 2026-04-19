@@ -61,8 +61,6 @@ After the learning cards, users can take a short quiz to test their understandin
 
 **Flow:** Learn → Quiz → Feedback → Review
 
-text
-
 ---
 
 ## 🚀 Getting Started
