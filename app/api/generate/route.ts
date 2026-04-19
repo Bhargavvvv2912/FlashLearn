@@ -88,6 +88,7 @@ export async function POST(req: Request) {
       newTopic,        // for find_connections action
       newSummary,      // for find_connections action
       existingTopics,  // for find_connections action
+      mistakes         // for remediation action
     } = await req.json();
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -213,7 +214,84 @@ Return ONLY valid JSON:
       const parsed = safeJsonParse(extractJsonObject(result.response.text()));
       return NextResponse.json(parsed, { headers: corsHeaders });
     }
+    // ── QUIZ ───────────────────────────────────────────────────────────────────
+    if (action === 'quiz') {
+      const quizPrompt = `
+  You are creating a short multiple-choice quiz based ONLY on the learner's current FlashLearn cards.
 
+  RULES:
+  - Generate exactly 3 questions
+  - Each question must test a different key concept from the cards
+  - 4 answer options each
+  - Exactly 1 correct answer
+  - Keep wording concise and clear
+  - Include a short explanation for why the correct answer is right
+  - Include a "concept" field naming the concept being tested
+  - Do NOT use knowledge outside the cards
+
+  Learner: ${about || 'General learner'} | Persona: ${persona} | Difficulty: ${difficulty}
+  Topic: ${topic}
+  Cards:
+  ${JSON.stringify(cards, null, 2)}
+
+  Return ONLY valid JSON:
+  {
+  "questions": [
+    {
+      "id": 1,
+      "question": "....",
+      "options": ["....", "....", "....", "...."],
+      "correctIndex": 0,
+      "explanation": "....",
+      "concept": "...."
+    }
+  ]
+}
+`;
+
+      const result = await model.generateContent(quizPrompt);
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      return NextResponse.json(parsed, { headers: corsHeaders });
+    }
+        // ── REMEDIATION ────────────────────────────────────────────────────────────
+    if (action === 'remediate') {
+      const remediationPrompt = `
+  You are helping a learner review concepts they got wrong in a quiz.
+
+  RULES:
+  - Create 1 remediation card per mistaken concept
+  - Each card must correct the misunderstanding, not just repeat the original explanation
+  - Make the explanation clearer and more concrete
+  - Use simple wording first, then one example
+  - Keep content concise
+  - If multiple mistakes are about the same concept, merge them into one card
+
+  Learner: ${about || 'General learner'} | Persona: ${persona} | Difficulty: ${difficulty}
+  Topic: ${topic}
+  Mistakes:
+  ${JSON.stringify(mistakes, null, 2)}
+
+  Return ONLY valid JSON:
+  {
+    "topic_summary": "Targeted review of weak concepts",
+    "cards": [
+      {
+        "id": 1,
+        "title": "....",
+        "hook": "....",
+        "content": "....",
+        "simpler": "....",
+        "detailed": "....",
+        "visual": "...."
+      }
+    ]
+  }
+  `;
+
+      const result = await model.generateContent(remediationPrompt);
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      return NextResponse.json(parsed, { headers: corsHeaders });
+    }
     // ── GENERATE CARDS (main action) ──────────────────────────────────────────
     const hasSourceContent = pageContent && pageContent.trim().length > 200;
     const isCode = isCodeProblem(topic || '');

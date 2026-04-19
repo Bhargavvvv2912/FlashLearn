@@ -42,6 +42,18 @@ interface FlashData {
   topic_summary: string;
   cards: Card[];
 }
+interface QuizQuestion {
+  id: number;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+  concept: string;
+}
+
+interface QuizData {
+  questions: QuizQuestion[];
+}
 
 type ViewMode = 'cards' | 'map' | 'tree' | 'chat' | 'globe';
 type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
@@ -112,6 +124,14 @@ export default function Home() {
   const [globeSelectedNode, setGlobeSelectedNode] = useState<GlobeNode | null>(null);
   const [connectionsFound, setConnectionsFound] = useState(0);
   const [showConnectionsToast, setShowConnectionsToast] = useState(false);
+
+   // quiz state
+  const [quizData, setQuizData] = useState<QuizData | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizScore, setQuizScore] = useState<number | null>(null);
+  const [quizAnchorIndex, setQuizAnchorIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -217,6 +237,11 @@ export default function Home() {
         setTreeSelectedBranch(null);
         setChatMessages([]);
         setChatInput('');
+        setQuizData(null);
+        setQuizAnswers([]);
+        setQuizSubmitted(false);
+        setQuizScore(null);
+        setQuizAnchorIndex(null);
 
         // Use a clean short name for the knowledge graph node
         // Prefer the page title (e.g. "Semiconductors" from "Semiconductors - Wikipedia")
@@ -446,6 +471,110 @@ export default function Home() {
 
     setChatLoading(false);
   };
+  // quiz generation
+  const handleGenerateQuiz = async () => {
+    if (!data) return;
+
+    setQuizLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'quiz',
+          topic,
+          about,
+          persona: getActivePersona(),
+          difficulty,
+          cards: data.cards,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (result.error) {
+        setError(`Quiz failed: ${result.error}`);
+      } else {
+        setQuizData(result);
+        setQuizAnswers(new Array(result.questions.length).fill(-1));
+        setQuizSubmitted(false);
+        setQuizScore(null);
+        setQuizAnchorIndex(index);
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Quiz generation failed. Please try again.');
+    }
+
+    setQuizLoading(false);
+  };
+    // quiz submission
+    const handleSubmitQuiz = async () => {
+    if (!quizData || !data) return;
+
+    if (quizAnswers.some((a) => a === -1)) {
+      setError('Please answer all quiz questions before submitting.');
+      return;
+    }
+
+    setError(null);
+
+    const questions = quizData.questions;
+    const correctCount = questions.filter(
+      (q, i) => quizAnswers[i] === q.correctIndex
+    ).length;
+
+    setQuizScore(correctCount);
+    setQuizSubmitted(true);
+
+    const mistakes = questions
+      .map((q, i) => ({
+        concept: q.concept,
+        question: q.question,
+        selected: quizAnswers[i],
+        correct: q.correctIndex,
+        userAnswer: q.options[quizAnswers[i]],
+        correctAnswer: q.options[q.correctIndex],
+      }))
+      .filter((m) => m.selected !== m.correct);
+
+    if (mistakes.length === 0) return;
+
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'remediate',
+          topic,
+          about,
+          persona: getActivePersona(),
+          difficulty,
+          mistakes,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (result.error) {
+        setError(`Remediation failed: ${result.error}`);
+      } else {
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                cards: [...prev.cards, ...result.cards],
+              }
+            : prev
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Remediation failed. Please try again.');
+    }
+  };
 
   // SETUP VIEW
   if (!data && !loading) {
@@ -667,6 +796,11 @@ export default function Home() {
       </div>
     );
   }
+  const shouldShowQuiz =
+  quizAnchorIndex !== null
+    ? index === quizAnchorIndex
+    : index === CARD_COUNT - 1;
+
 
   // MAIN APP VIEW
   return (
@@ -679,6 +813,11 @@ export default function Home() {
               setError(null);
               setChatMessages([]);
               setChatInput('');
+              setQuizData(null);
+              setQuizAnswers([]);
+              setQuizSubmitted(false);
+              setQuizScore(null);
+              setQuizAnchorIndex(null);
             }}
             className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm"
           >
@@ -1294,6 +1433,108 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+                        {shouldShowQuiz && (
+              <div className="px-6 pb-2 space-y-4">
+                {!quizData && (
+                  <button
+                    onClick={handleGenerateQuiz}
+                    disabled={quizLoading}
+                    className="w-full py-3 bg-emerald-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-emerald-700 disabled:opacity-40 transition-colors"
+                  >
+                    {quizLoading ? 'Generating Quiz...' : 'Test Your Knowledge'}
+                  </button>
+                )}
+
+                {quizData && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-5">
+                    <div>
+                      <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                        Quick Check
+                      </p>
+                      <h3 className="text-lg font-black text-slate-800 mt-1">
+                        End-of-Path Quiz
+                      </h3>
+                    </div>
+
+                    {quizData.questions.map((q, qi) => (
+                      <div key={q.id} className="space-y-3">
+                        <p className="text-sm font-bold text-slate-800">
+                          {qi + 1}. {q.question}
+                        </p>
+
+                        <div className="grid gap-2">
+                          {q.options.map((option, oi) => {
+                            const selected = quizAnswers[qi] === oi;
+                            const isCorrect = oi === q.correctIndex;
+                            const showReview = quizSubmitted;
+
+                            return (
+                              <button
+                                key={oi}
+                                onClick={() => {
+                                  if (quizSubmitted) return;
+                                  setQuizAnswers((prev) => {
+                                    const next = [...prev];
+                                    next[qi] = oi;
+                                    return next;
+                                  });
+                                }}
+                                className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition ${
+                                  showReview
+                                    ? isCorrect
+                                      ? 'border-green-500 bg-green-50 text-green-800'
+                                      : selected
+                                      ? 'border-red-400 bg-red-50 text-red-700'
+                                      : 'border-slate-200 bg-white text-slate-600'
+                                    : selected
+                                    ? 'border-indigo-500 bg-indigo-50 text-indigo-800'
+                                    : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300'
+                                }`}
+                              >
+                                {option}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {quizSubmitted && (
+                          <div className="bg-white border border-slate-200 rounded-xl p-3">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                              Explanation
+                            </p>
+                            <p className="text-sm text-slate-700">{q.explanation}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {!quizSubmitted ? (
+                      <button
+                        onClick={handleSubmitQuiz}
+                        className="w-full py-3 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 transition-colors"
+                      >
+                        Submit Quiz
+                      </button>
+                    ) : (
+                      <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                        <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                          Score
+                        </p>
+                        <p className="text-lg font-black text-slate-800 mt-1">
+                          {quizScore} / {quizData.questions.length}
+                        </p>
+                        <p className="text-sm text-slate-600 mt-1">
+                          {quizScore === quizData.questions.length
+                            ? 'Perfect score! Great job mastering this topic.'
+                            : 'New review cards were added after this card. Click Next → to continue.'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="border-t border-slate-100 p-4 space-y-4">
               <div className="flex gap-1.5">
