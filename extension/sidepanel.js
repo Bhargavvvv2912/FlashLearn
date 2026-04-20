@@ -47,10 +47,13 @@ chrome.storage.local.get(
       };
     }
 
+    // Cache-buster: append timestamp so Chrome always fetches the latest Vercel deploy
+    const bust = `_cb=${Date.now()}`;
+
     if (text) {
-      frame.src = `${APP_URL}/?selectedText=${encodeURIComponent(text)}`;
+      frame.src = `${APP_URL}/?selectedText=${encodeURIComponent(text)}&${bust}`;
     } else {
-      frame.src = APP_URL;
+      frame.src = `${APP_URL}/?${bust}`;
     }
 
     chrome.storage.local.remove([
