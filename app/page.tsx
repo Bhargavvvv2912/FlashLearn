@@ -1,11 +1,11 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
   Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink,
-  Globe, Brain, Trash2
+  Globe, Brain, Trash2, Mic, MicOff, Shield, BookOpen, Network, Volume2, VolumeX
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
@@ -133,6 +133,23 @@ export default function Home() {
   const [quizScore, setQuizScore] = useState<number | null>(null);
   const [quizAnchorIndex, setQuizAnchorIndex] = useState<number | null>(null);
 
+  // splash / onboarding
+  const [showSplash, setShowSplash] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !localStorage.getItem('flashlearn_seen_splash');
+  });
+
+  // voice input
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  // text-to-speech
+  const [isReading, setIsReading] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // HAI transparency panel
+  const [showHAIPanel, setShowHAIPanel] = useState(false);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem('flashlearn_about', about);
@@ -156,6 +173,38 @@ export default function Home() {
     setKnowledgeGraph(loadGraph());
   }, []);
 
+  // Cancel TTS when card or view changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+    }
+  }, [index, view]);
+
+  // Keyboard shortcuts for card navigation
+  useEffect(() => {
+    if (!data) return;
+    const cardCount = data.cards?.length ?? 7;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'ArrowRight' && viewMode === 'cards') {
+        setIndex((i) => Math.min(cardCount - 1, i + 1));
+        setRefinement(null);
+        setView('normal');
+        setShowHook(true);
+      } else if (e.key === 'ArrowLeft' && viewMode === 'cards') {
+        setIndex((i) => Math.max(0, i - 1));
+        setRefinement(null);
+        setView('normal');
+        setShowHook(true);
+      } else if (e.key === 'c' && viewMode !== 'chat') {
+        setViewMode('chat');
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [data, viewMode]);
+
   // Receive page context from the extension side panel via postMessage
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -171,10 +220,87 @@ export default function Home() {
 
   const getActivePersona = () => (useCustomPersona ? customPersona : persona);
   const CARD_COUNT = data?.cards?.length ?? 7;
+
+  const startRecognition = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setError('Voice input requires Chrome or Edge.');
+      return;
+    }
+    const recognition = new SR();
+    recognitionRef.current = recognition;
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      setChatInput(event.results[0][0].transcript);
+    };
+    recognition.onerror = (event: any) => {
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setError('Microphone blocked. Click the lock icon in your browser address bar and allow microphone for this site, then try again.');
+      } else if (event.error !== 'no-speech') {
+        setError(`Voice error: ${event.error}`);
+      }
+    };
+    recognition.start();
+  };
+
+  const handleVoiceInput = () => {
+    if (isListening) { recognitionRef.current?.stop(); return; }
+    // Pre-warm mic permission so Chrome shows the permission dialog if needed
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => startRecognition())
+        .catch(() => setError('Microphone access denied. Allow microphone access in your browser for this site, then try again.'));
+    } else {
+      startRecognition();
+    }
+  };
+
+  const handleReadAloud = () => {
+    if (!currentCard || typeof window === 'undefined' || !window.speechSynthesis) return;
+    if (isReading || window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+      return;
+    }
+    const cardText = [
+      `Card ${index + 1}: ${asText(currentCard.title)}.`,
+      asText(currentCard.hook),
+      view === 'simpler' ? asText(currentCard.simpler) :
+      view === 'detailed' ? asText(currentCard.detailed) :
+      view === 'visual' ? 'Visual diagram available on screen.' :
+      asText(currentCard.content),
+    ].filter(Boolean).join(' ');
+
+    const utterance = new SpeechSynthesisUtterance(cardText);
+    utteranceRef.current = utterance;
+    utterance.rate = 0.9;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    utterance.onstart = () => setIsReading(true);
+    utterance.onend = () => setIsReading(false);
+    utterance.onerror = () => setIsReading(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
   const currentCard = data?.cards?.[index] || null;
 
   const asText = (value: unknown) =>
     Array.isArray(value) ? value.join('\n') : String(value ?? '');
+
+  const suggestedQuestions = useMemo(() => {
+    if (!currentCard) return [];
+    const title = Array.isArray(currentCard.title) ? currentCard.title.join('\n') : String(currentCard.title ?? '');
+    return [
+      `Can you give a real-world example of "${title}"?`,
+      `How does "${title}" connect to the other concepts here?`,
+      `What's the most common misconception about "${title}"?`,
+    ];
+  }, [currentCard]);
 
   const ErrorBanner = () =>
     error ? (
@@ -576,6 +702,81 @@ export default function Home() {
     }
   };
 
+  // SPLASH / LANDING VIEW
+  if (showSplash) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex flex-col items-center justify-center p-6">
+        <div className="w-full max-w-2xl space-y-8 text-center">
+          {/* Hero */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-center gap-3">
+              <div className="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg">
+                <Zap className="w-8 h-8 text-white" />
+              </div>
+              <h1 className="text-4xl font-black text-slate-900 tracking-tight">FlashLearn</h1>
+            </div>
+            <p className="text-xl text-slate-600 max-w-lg mx-auto leading-relaxed">
+              Learn anything, your way: AI-powered flashcards that adapt to <em>how you think</em>
+            </p>
+            <p className="text-xs font-black uppercase tracking-widest text-indigo-500">
+              Built for Human-AI Interaction · University of Michigan
+            </p>
+          </div>
+
+          {/* Feature grid */}
+          <div className="grid grid-cols-3 gap-4 text-left">
+            {[
+              { icon: BrainCircuit, color: 'text-indigo-600', bg: 'bg-indigo-50', title: 'You Control the AI', desc: 'Set your persona, level, and background. The AI adapts its explanation to exactly how you learn.' },
+              { icon: MessageSquare, color: 'text-emerald-600', bg: 'bg-emerald-50', title: 'Ask Anything', desc: 'Multi-turn AI chat grounded in your cards. Get answers, not links. Try voice input too.' },
+              { icon: Network, color: 'text-purple-600', bg: 'bg-purple-50', title: 'Knowledge Map', desc: 'Watch topics form a 3D knowledge graph as you learn. See how ideas connect across sessions.' },
+            ].map(({ icon: Icon, color, bg, title, desc }) => (
+              <div key={title} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+                <div className={`w-8 h-8 ${bg} rounded-xl flex items-center justify-center mb-3`}>
+                  <Icon className={`w-4 h-4 ${color}`} />
+                </div>
+                <p className="font-black text-slate-800 text-sm mb-1">{title}</p>
+                <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* HAI principle note */}
+          <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-left flex gap-3 items-start">
+            <Shield className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-black text-indigo-800">Human in the Loop: Always</p>
+              <p className="text-xs text-indigo-600 mt-0.5 leading-relaxed">
+                FlashLearn never generates silently. You choose the persona, difficulty, and context before every explanation. The AI follows your lead, not the other way around.
+              </p>
+            </div>
+          </div>
+
+          {/* Also works as Chrome extension */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-3 text-left">
+            <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
+            <p className="text-xs text-slate-500 leading-relaxed">
+              <span className="font-black text-slate-700">Chrome Extension available.</span>{' '}
+              Highlight any text on any webpage and generate flashcards from that source, with Back-to-Source linking.
+            </p>
+          </div>
+
+          <button
+            onClick={() => {
+              localStorage.setItem('flashlearn_seen_splash', '1');
+              setShowSplash(false);
+            }}
+            className="w-full py-4 bg-indigo-600 text-white font-black text-base uppercase tracking-widest rounded-2xl hover:bg-indigo-700 transition-colors shadow-lg focus:outline-none focus:ring-4 focus:ring-indigo-300"
+            autoFocus
+            aria-label="Get started with FlashLearn"
+          >
+            Start Learning →
+          </button>
+          <p className="text-xs text-slate-400">Free · Works on any topic · No account required</p>
+        </div>
+      </div>
+    );
+  }
+
   // SETUP VIEW
   if (!data && !loading) {
     return (
@@ -589,7 +790,7 @@ export default function Home() {
               </h1>
             </div>
             <p className="text-slate-500 text-sm">
-              Understand any topic — without the information overload
+              Understand any topic, without the information overload
             </p>
           </div>
 
@@ -652,6 +853,37 @@ export default function Home() {
                 className="mt-2 w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
               />
             )}
+          </div>
+
+          {/* HAI Transparency Badge */}
+          <div
+            className="flex items-start gap-3 bg-indigo-50 border border-indigo-100 rounded-xl p-3 cursor-pointer hover:border-indigo-300 transition-colors"
+            onClick={() => setShowHAIPanel(v => !v)}
+            role="button"
+            tabIndex={0}
+            aria-expanded={showHAIPanel}
+            aria-label="AI transparency: see how the AI is configured"
+            onKeyDown={(e) => e.key === 'Enter' && setShowHAIPanel(v => !v)}
+          >
+            <Shield className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-black text-indigo-700 uppercase tracking-widest">
+                AI Mode: {useCustomPersona ? (customPersona || 'Custom') : persona} · {difficulty}
+              </p>
+              <p className="text-[10px] text-indigo-500 mt-0.5">
+                {showHAIPanel ? 'Hide' : 'See'} how the AI will explain this topic to you →
+              </p>
+              {showHAIPanel && (
+                <div className="mt-2 space-y-1.5 text-[11px] text-indigo-700">
+                  <p><span className="font-black">Persona:</span> {useCustomPersona ? (customPersona || 'Not set') : persona}</p>
+                  <p><span className="font-black">Difficulty:</span> {difficulty}: AI calibrates vocabulary and depth to this level</p>
+                  {about && <p><span className="font-black">Your background:</span> {about.slice(0, 120)}{about.length > 120 ? '…' : ''}</p>}
+                  <p className="text-indigo-400 pt-1 border-t border-indigo-100">
+                    The AI only uses the persona and settings <em>you</em> choose. You can change them anytime before generating.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
 
           <div>
@@ -774,7 +1006,8 @@ export default function Home() {
           <button
             onClick={generateCards}
             disabled={!topic.trim()}
-            className="w-full py-4 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            aria-label={topic.trim() ? `Generate flashcards for ${topic}` : 'Enter a topic to generate flashcards'}
+            className="w-full py-4 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-4 focus:ring-indigo-300"
           >
             Generate Learning Path →
           </button>
@@ -819,14 +1052,27 @@ export default function Home() {
               setQuizScore(null);
               setQuizAnchorIndex(null);
             }}
-            className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm"
+            className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 rounded-lg px-1"
+            aria-label="Go back to topic selection"
           >
             <ChevronLeft className="w-4 h-4" /> New Topic
           </button>
-          <div className="flex gap-2">
+          {/* AI Mode badge */}
+          <div
+            title={`AI persona: ${getActivePersona()} · Difficulty: ${difficulty}`}
+            className="hidden sm:flex items-center gap-1.5 text-[10px] bg-indigo-50 text-indigo-600 rounded-full px-2.5 py-1 font-black border border-indigo-100 cursor-default"
+            aria-label={`AI configured for ${getActivePersona()} at ${difficulty} level`}
+          >
+            <Shield className="w-3 h-3" />
+            {(useCustomPersona ? customPersona : persona).split(' ').slice(0, 2).join(' ')} · {difficulty}
+          </div>
+          <nav className="flex gap-2" aria-label="View modes" role="navigation">
             <button
               onClick={() => setViewMode('cards')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Card view"
+              aria-pressed={viewMode === 'cards'}
+              title="Card View"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'cards'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
@@ -836,7 +1082,10 @@ export default function Home() {
             </button>
             <button
               onClick={() => setViewMode('map')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Map view — all cards at a glance"
+              aria-pressed={viewMode === 'map'}
+              title="Map View"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'map'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
@@ -850,38 +1099,44 @@ export default function Home() {
                 setTreeFocusCardIndex(null);
                 setTreeSelectedBranch(null);
               }}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Knowledge tree view"
+              aria-pressed={viewMode === 'tree'}
+              title="Knowledge Tree"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'tree'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Knowledge Tree"
             >
               <GitBranch className="w-4 h-4" />
             </button>
             <button
               onClick={() => setViewMode('chat')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="AI chat view"
+              aria-pressed={viewMode === 'chat'}
+              title="AI Chat"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'chat'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Chat"
             >
               <MessageSquare className="w-4 h-4" />
             </button>
             <button
               onClick={() => { setViewMode('globe'); setGlobeSelectedNode(null); }}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Knowledge universe — 3D graph"
+              aria-pressed={viewMode === 'globe'}
+              title="Knowledge Universe"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'globe'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Knowledge Universe"
             >
               <Globe className="w-4 h-4" />
             </button>
-          </div>
+          </nav>
         </div>
 
         <ErrorBanner />
@@ -1207,12 +1462,21 @@ export default function Home() {
                 </p>
               </div>
 
-              <div className="h-[360px] overflow-y-auto border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50">
+              <div className="h-[360px] overflow-y-auto border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50" role="log" aria-live="polite" aria-label="Chat messages">
                 {chatMessages.length === 0 && (
-                  <p className="text-sm text-slate-500">
-                    Ask a follow-up like “Can you connect card 2 and card 4?”
-                    or “Give me a simpler intuition.”
-                  </p>
+                  <div className="space-y-3">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Suggested questions</p>
+                    {suggestedQuestions.map((q, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setChatInput(q); }}
+                        className="w-full text-left px-3 py-2.5 rounded-xl border border-indigo-100 bg-white text-sm text-slate-700 hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                    <p className="text-xs text-slate-400 mt-2">Or type your own question below.</p>
+                  </div>
                 )}
 
                 {chatMessages.map((msg, i) => (
@@ -1242,12 +1506,26 @@ export default function Home() {
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleChat()}
                   placeholder="Ask a follow-up question..."
+                  aria-label="Chat question input"
                   className="flex-1 p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 />
                 <button
+                  onClick={handleVoiceInput}
+                  aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+                  title={isListening ? 'Listening… click to stop' : 'Voice input'}
+                  className={`px-3 py-3 rounded-xl font-black text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                    isListening
+                      ? 'bg-red-100 text-red-600 animate-pulse'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+                <button
                   onClick={handleChat}
                   disabled={!chatInput.trim() || chatLoading}
-                  className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 disabled:opacity-30"
+                  aria-label="Send chat message"
+                  className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   Ask
                 </button>
@@ -1398,6 +1676,17 @@ export default function Home() {
                     >
                       <BrainCircuit className="w-3 h-3" /> Drill Deeper
                     </button>
+                    <button
+                      onClick={handleReadAloud}
+                      aria-label={isReading ? 'Stop reading aloud' : 'Read card aloud'}
+                      title={isReading ? 'Stop' : 'Listen to this card'}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors ${
+                        isReading ? 'text-emerald-600 animate-pulse' : 'text-slate-400 hover:text-emerald-500'
+                      }`}
+                    >
+                      {isReading ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                      {isReading ? 'Stop' : 'Listen'}
+                    </button>
                     <div className="ml-auto">
                       <button
                         onClick={handleRegenerateCard}
@@ -1537,47 +1826,51 @@ export default function Home() {
             )}
 
             <div className="border-t border-slate-100 p-4 space-y-4">
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5" role="tablist" aria-label="Explanation mode">
                 {(['simpler', 'normal', 'detailed', 'visual'] as const).map(
-                  (v) => (
-                    <button
-                      key={v}
-                      onClick={() => {
-                        setView(v);
-                        setRefinement(null);
-                      }}
-                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
-                        view === v
-                          ? 'bg-indigo-600 text-white shadow-md'
-                          : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
-                      }`}
-                    >
-                      {v === 'simpler'
-                        ? 'Analogy'
-                        : v === 'normal'
-                        ? 'Core'
-                        : v === 'detailed'
-                        ? 'Deeper'
-                        : 'Visual'}
-                    </button>
-                  ),
+                  (v) => {
+                    const label = v === 'simpler' ? 'Analogy' : v === 'normal' ? 'Core' : v === 'detailed' ? 'Deeper' : 'Visual';
+                    return (
+                      <button
+                        key={v}
+                        role="tab"
+                        aria-selected={view === v}
+                        aria-label={`${label} explanation`}
+                        onClick={() => {
+                          setView(v);
+                          setRefinement(null);
+                        }}
+                        className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                          view === v
+                            ? 'bg-indigo-600 text-white shadow-md'
+                            : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  },
                 )}
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4" role="navigation" aria-label="Card navigation">
                 <button
                   onClick={() => resetNavigation(Math.max(0, index - 1))}
                   disabled={index === 0}
-                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                  aria-label="Previous card"
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
-                <div className="flex-1 flex justify-center gap-2">
-                  {data?.cards.map((_, i) => (
+                <div className="flex-1 flex justify-center gap-2" role="tablist" aria-label="Cards">
+                  {data?.cards.map((card, i) => (
                     <button
                       key={i}
                       onClick={() => resetNavigation(i)}
-                      className={`h-2 rounded-full transition-all bg-indigo-400 ${
+                      role="tab"
+                      aria-selected={i === index}
+                      aria-label={`Card ${i + 1}: ${asText(card.title)}`}
+                      className={`h-2 rounded-full transition-all bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                         i === index
                           ? 'w-4 opacity-100'
                           : 'w-2 opacity-30 hover:opacity-70'
@@ -1590,7 +1883,8 @@ export default function Home() {
                     resetNavigation(Math.min(CARD_COUNT - 1, index + 1))
                   }
                   disabled={index === CARD_COUNT - 1}
-                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                  aria-label="Next card"
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -1655,7 +1949,7 @@ export default function Home() {
                     <div key={label} className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
                       <span className="text-slate-300 text-xs font-bold">{label}</span>
-                      <span className="text-slate-500 text-[10px]">— {desc}</span>
+                      <span className="text-slate-500 text-[10px]">: {desc}</span>
                     </div>
                   ))}
                 </div>
@@ -1683,7 +1977,7 @@ export default function Home() {
                         const other = knowledgeGraph.nodes.find((n) => n.id === otherId);
                         return (
                           <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
-                            <span className="text-indigo-400 font-bold">{other?.topic}</span> — {e.bridge}
+                            <span className="text-indigo-400 font-bold">{other?.topic}</span>: {e.bridge}
                           </div>
                         );
                       })}
@@ -1751,6 +2045,18 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Floating chat button — visible when not already in chat/globe/tree */}
+      {data && viewMode !== 'chat' && viewMode !== 'globe' && viewMode !== 'tree' && (
+        <button
+          onClick={() => setViewMode('chat')}
+          aria-label="Open AI chat assistant"
+          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 bg-indigo-600 text-white rounded-2xl shadow-2xl px-4 py-3 hover:bg-indigo-700 active:scale-95 transition-all font-black text-sm focus:outline-none focus:ring-4 focus:ring-indigo-300"
+        >
+          <MessageSquare className="w-5 h-5" />
+          Ask AI
+        </button>
+      )}
 
       {/* Connections discovered toast */}
       {showConnectionsToast && connectionsFound > 0 && (
