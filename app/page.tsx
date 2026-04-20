@@ -12,11 +12,34 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {
-  loadGraph, upsertNode, mergeEdges, clearGraph,
+  loadGraph, upsertNode, mergeEdges, clearGraph, topicToId,
+  upsertGraphNode, upsertGraphEdge,
   getTopConnectedNodes, getIsolatedNodes,
-  type KnowledgeGraph,
+  type KnowledgeGraph, type KnowledgeRelation,
 } from './lib/knowledgeGraph';
 import type { GlobeNode } from './components/KnowledgeGlobe';
+
+type SpeechRecognitionResultListLike = {
+  [index: number]: { [index: number]: { transcript: string } };
+};
+type SpeechRecognitionEventLike = { results: SpeechRecognitionResultListLike };
+type SpeechRecognitionErrorEventLike = { error: string };
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+};
 
 const KnowledgeGlobe = dynamic(
   () => import('./components/KnowledgeGlobe'),
@@ -55,10 +78,36 @@ interface QuizData {
   questions: QuizQuestion[];
 }
 
+type ExpansionAction = 'simplify' | 'example' | 'drill' | 'reexplain';
+type ExpansionRelation = Extract<
+  KnowledgeRelation,
+  'simplify' | 'example' | 'reexplain' | 'drill_deeper'
+>;
+type GraphNodeInput = Parameters<typeof upsertGraphNode>[0];
+type GraphEdgeInput = Parameters<typeof upsertGraphEdge>[0];
+type ExpansionMiniCard = {
+  id?: string;
+  title: string;
+  content: string;
+};
+type QuestionAnswerCard = {
+  title: string;
+  content: string;
+};
+type ExpansionPanel = {
+  action: ExpansionAction;
+  cards: ExpansionMiniCard[];
+  activeIndex: number;
+};
 type ViewMode = 'cards' | 'map' | 'tree' | 'chat' | 'globe';
 type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
 
-type ChatMessage = { role: 'user' | 'assistant'; text: string };
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  text?: string;
+  cards?: QuestionAnswerCard[];
+};
 
 const PERSONA_CHIPS = [
   { label: '👶 Simple', value: 'Explain like I am 12 years old with no technical background', color: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -68,7 +117,11 @@ const PERSONA_CHIPS = [
 ];
 
 export default function Home() {
-  const [topic, setTopic] = useState('');
+  const [topic, setTopic] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    const selected = new URLSearchParams(window.location.search).get('selectedText');
+    return selected ? selected.slice(0, 300) : '';
+  });
   const [about, setAbout] = useState(() => {
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('flashlearn_about') || '';
@@ -98,15 +151,20 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refinement, setRefinement] = useState<string | null>(null);
-  const [isRefining, setIsRefining] = useState(false);
-  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [expansions, setExpansions] = useState<Record<number, ExpansionPanel>>({});
+  const [expansionCache, setExpansionCache] = useState<Record<string, ExpansionMiniCard[]>>({});
+  const [expansionLoading, setExpansionLoading] = useState<{
+    cardIndex: number;
+    action: ExpansionAction;
+  } | null>(null);
+  const [expansionErrors, setExpansionErrors] = useState<Record<number, string>>({});
   const [showHook, setShowHook] = useState(true);
-  const [refinementCache, setRefinementCache] = useState<Record<string, string>>({});
 
-  // tree state
+  // tree/map selection state
   const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
   const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
+  const [treeSelectedNodeId, setTreeSelectedNodeId] = useState<string | null>(null);
+  const [mapSelectedExpansionNodeId, setMapSelectedExpansionNodeId] = useState<string | null>(null);
 
   // chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -119,11 +177,30 @@ export default function Home() {
   const [pageContent, setPageContent] = useState('');
 
   // v2: knowledge graph & memory
-  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>({ nodes: [], edges: [] });
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>(() => loadGraph());
   const [useMemory, setUseMemory] = useState(false);
   const [globeSelectedNode, setGlobeSelectedNode] = useState<GlobeNode | null>(null);
   const [connectionsFound, setConnectionsFound] = useState(0);
   const [showConnectionsToast, setShowConnectionsToast] = useState(false);
+  const [currentTopicNodeId, setCurrentTopicNodeId] = useState<string | null>(null);
+
+  const topicUniverseGraph = useMemo<KnowledgeGraph>(() => {
+    const topicNodes = knowledgeGraph.nodes.filter((node) => !node.type);
+    const topicNodeIds = new Set(topicNodes.map((node) => node.id));
+    return {
+      nodes: topicNodes,
+      edges: knowledgeGraph.edges.filter(
+        (edge) =>
+          !edge.relation &&
+          topicNodeIds.has(edge.source) &&
+          topicNodeIds.has(edge.target),
+      ),
+    };
+  }, [knowledgeGraph]);
+  const isolatedTopicNodes = useMemo(
+    () => getIsolatedNodes(topicUniverseGraph),
+    [topicUniverseGraph],
+  );
 
    // quiz state
   const [quizData, setQuizData] = useState<QuizData | null>(null);
@@ -141,7 +218,7 @@ export default function Home() {
 
   // voice input
   const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   // text-to-speech
   const [isReading, setIsReading] = useState(false);
@@ -159,25 +236,28 @@ export default function Home() {
     localStorage.setItem('flashlearn_context', context);
   }, [about, persona, customPersona, difficulty, context]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const selected = params.get('selectedText');
-    if (selected && !topic) {
-      setTopic(selected.slice(0, 300));
-    }
-  }, [topic]);
-
-  // Load knowledge graph from localStorage on mount
-  useEffect(() => {
-    setKnowledgeGraph(loadGraph());
-  }, []);
+  const clearExpansionForCard = (cardIndex: number) => {
+    setExpansions((prev) => {
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
+    setExpansionErrors((prev) => {
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
+    setExpansionLoading((current) =>
+      current?.cardIndex === cardIndex ? null : current,
+    );
+  };
 
   // Cancel TTS when card or view changes
   useEffect(() => {
     if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) {
       window.speechSynthesis.cancel();
-      setIsReading(false);
+      const timeout = window.setTimeout(() => setIsReading(false), 0);
+      return () => window.clearTimeout(timeout);
     }
   }, [index, view]);
 
@@ -189,12 +269,12 @@ export default function Home() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === 'ArrowRight' && viewMode === 'cards') {
         setIndex((i) => Math.min(cardCount - 1, i + 1));
-        setRefinement(null);
+        clearExpansionForCard(index);
         setView('normal');
         setShowHook(true);
       } else if (e.key === 'ArrowLeft' && viewMode === 'cards') {
         setIndex((i) => Math.max(0, i - 1));
-        setRefinement(null);
+        clearExpansionForCard(index);
         setView('normal');
         setShowHook(true);
       } else if (e.key === 'c' && viewMode !== 'chat') {
@@ -203,7 +283,7 @@ export default function Home() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [data, viewMode]);
+  }, [data, index, viewMode]);
 
   // Receive page context from the extension side panel via postMessage
   useEffect(() => {
@@ -222,7 +302,8 @@ export default function Home() {
   const CARD_COUNT = data?.cards?.length ?? 7;
 
   const startRecognition = () => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const speechWindow = window as SpeechRecognitionWindow;
+    const SR = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
     if (!SR) {
       setError('Voice input requires Chrome or Edge.');
       return;
@@ -234,10 +315,10 @@ export default function Home() {
     recognition.maxAlternatives = 1;
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEventLike) => {
       setChatInput(event.results[0][0].transcript);
     };
-    recognition.onerror = (event: any) => {
+    recognition.onerror = (event: SpeechRecognitionErrorEventLike) => {
       setIsListening(false);
       if (event.error === 'not-allowed') {
         setError('Microphone blocked. Click the lock icon in your browser address bar and allow microphone for this site, then try again.');
@@ -287,22 +368,21 @@ export default function Home() {
     window.speechSynthesis.speak(utterance);
   };
 
-  const currentCard = data?.cards?.[index] || null;
-
   const asText = (value: unknown) =>
     Array.isArray(value) ? value.join('\n') : String(value ?? '');
 
+  const currentCard = data?.cards?.[index] || null;
   const suggestedQuestions = useMemo(() => {
-    if (!currentCard) return [];
-    const title = Array.isArray(currentCard.title) ? currentCard.title.join('\n') : String(currentCard.title ?? '');
+    const firstTitle = data?.cards?.[0]?.title;
+    const currentTitle = currentCard?.title;
     return [
-      `Can you give a real-world example of "${title}"?`,
-      `How does "${title}" connect to the other concepts here?`,
-      `What's the most common misconception about "${title}"?`,
+      `Can you connect ${asText(firstTitle || 'card 1')} to ${asText(currentTitle || 'this card')}?`,
+      'What is the simplest intuition behind this?',
+      'What is one real-world example of this idea?',
     ];
-  }, [currentCard]);
+  }, [currentCard, data]);
 
-  const ErrorBanner = () =>
+  const errorBanner =
     error ? (
       <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
@@ -319,6 +399,192 @@ export default function Home() {
       </div>
     ) : null;
 
+  const getTopicNodeId = () => currentTopicNodeId || (topic.trim() ? topicToId(topic) : 'current-topic');
+  const getMainCardNodeId = (cardIndex: number) => `${getTopicNodeId()}-card-${cardIndex + 1}`;
+  const getReviewGroupId = () => `${getTopicNodeId()}-review`;
+
+  const expansionLabels: Record<ExpansionAction, string> = {
+    simplify: 'Simplify',
+    example: 'Real Example',
+    drill: 'Drill Deeper',
+    reexplain: 'Re-explain',
+  };
+
+  const expansionRelationByAction: Record<ExpansionAction, ExpansionRelation> = {
+    simplify: 'simplify',
+    example: 'example',
+    drill: 'drill_deeper',
+    reexplain: 'reexplain',
+  };
+
+  const syncKnowledgeGraph = () => setKnowledgeGraph({ ...loadGraph() });
+
+  const saveGraphNode = (node: GraphNodeInput) => {
+    upsertGraphNode(node);
+  };
+
+  const saveGraphEdge = (edge: GraphEdgeInput) => {
+    upsertGraphEdge(edge);
+  };
+
+  const persistMainCardNodes = (
+    cards: Card[],
+    topicNodeId: string,
+    topicName: string,
+    topicSummary: string,
+  ) => {
+    cards.slice(0, 7).forEach((card, cardIndex) => {
+      const cardId = `${topicNodeId}-card-${cardIndex + 1}`;
+      saveGraphNode({
+        id: cardId,
+        topic: `Card ${cardIndex + 1}: ${asText(card.title)}`,
+        summary: asText(card.content).slice(0, 240),
+        type: 'main',
+        relation: 'main',
+        parentId: topicNodeId,
+        cardIndex,
+      });
+      saveGraphEdge({
+        source: topicNodeId,
+        target: cardId,
+        weight: 0.8,
+        bridge: `${topicName} learning path card ${cardIndex + 1}`,
+        label: 'Main',
+        relation: 'main',
+      });
+    });
+    if (cards.length > 0) {
+      saveGraphNode({
+        id: topicNodeId,
+        topic: topicName,
+        summary: topicSummary,
+      });
+    }
+    syncKnowledgeGraph();
+  };
+
+  const persistExpansionNodes = (
+    cardIndex: number,
+    action: ExpansionAction,
+    cards: ExpansionMiniCard[],
+  ): ExpansionMiniCard[] => {
+    if (!data) return cards;
+
+    const relation = expansionRelationByAction[action];
+    const label = expansionLabels[action];
+    const parentCard = data.cards[cardIndex];
+    const parentId = getMainCardNodeId(cardIndex);
+    const groupId = `${parentId}-${relation}`;
+
+    saveGraphNode({
+      id: parentId,
+      topic: `Card ${cardIndex + 1}: ${asText(parentCard?.title)}`,
+      summary: asText(parentCard?.content).slice(0, 240),
+      type: 'main',
+      relation: 'main',
+      parentId: getTopicNodeId(),
+      cardIndex,
+    });
+    saveGraphNode({
+      id: groupId,
+      topic: label,
+      summary: `${label} refinements for ${asText(parentCard?.title)}`,
+      type: 'expansion_group',
+      relation,
+      parentId,
+      cardIndex,
+    });
+    saveGraphEdge({
+      source: parentId,
+      target: groupId,
+      weight: 0.8,
+      bridge: `${label} expansion of ${asText(parentCard?.title)}`,
+      label,
+      relation,
+    });
+
+    const enrichedCards = cards.slice(0, 2).map((card, miniIndex) => {
+      const nodeId = `${groupId}-${miniIndex + 1}`;
+      saveGraphNode({
+        id: nodeId,
+        topic: `${label}: ${card.title}`,
+        summary: card.content,
+        type: 'expansion',
+        relation,
+        parentId: groupId,
+        cardIndex,
+      });
+      saveGraphEdge({
+        source: groupId,
+        target: nodeId,
+        weight: 0.7,
+        bridge: `${label} sub-card ${miniIndex + 1}`,
+        label,
+        relation,
+      });
+      return { ...card, id: nodeId };
+    });
+
+    syncKnowledgeGraph();
+    return enrichedCards;
+  };
+
+  const persistReviewNodes = (reviewCards: Card[]) => {
+    const groupId = getReviewGroupId();
+
+    saveGraphNode({
+      id: groupId,
+      topic: 'Review',
+      summary: 'Reinforcement cards generated from quiz misses.',
+      type: 'review_group',
+      relation: 'review',
+      reviewGroupId: groupId,
+    });
+
+    reviewCards.forEach((card, reviewIndex) => {
+      const nodeId = `${groupId}-card-${reviewIndex + 1}`;
+      saveGraphNode({
+        id: nodeId,
+        topic: `Review ${reviewIndex + 1}: ${asText(card.title)}`,
+        summary: asText(card.content).slice(0, 240),
+        type: 'review',
+        relation: 'review',
+        parentId: groupId,
+        reviewGroupId: groupId,
+        cardIndex: 7 + reviewIndex,
+      });
+      saveGraphEdge({
+        source: groupId,
+        target: nodeId,
+        weight: 0.75,
+        bridge: `Review card ${reviewIndex + 1}`,
+        label: 'Review',
+        relation: 'review',
+      });
+    });
+
+    syncKnowledgeGraph();
+  };
+
+  const getExpansionGroupsForCard = (cardIndex: number) => {
+    const parentId = getMainCardNodeId(cardIndex);
+    return knowledgeGraph.nodes
+      .filter((node) => node.type === 'expansion_group' && node.parentId === parentId)
+      .sort((a, b) => a.topic.localeCompare(b.topic));
+  };
+
+  const getExpansionNodesForGroup = (groupId: string) =>
+    knowledgeGraph.nodes
+      .filter((node) => node.type === 'expansion' && node.parentId === groupId)
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+  const getReviewNodes = () => {
+    const groupId = getReviewGroupId();
+    return knowledgeGraph.nodes
+      .filter((node) => node.type === 'review' && node.reviewGroupId === groupId)
+      .sort((a, b) => (a.cardIndex ?? 0) - (b.cardIndex ?? 0));
+  };
+
   const generateCards = async () => {
     if (!topic.trim()) return;
     setLoading(true);
@@ -326,8 +592,8 @@ export default function Home() {
     try {
       // Build memory context from top connected nodes if memory mode is on
       const memoryContext =
-        useMemory && knowledgeGraph.nodes.length > 0
-          ? getTopConnectedNodes(knowledgeGraph, 5).map((n) => ({
+        useMemory && topicUniverseGraph.nodes.length > 0
+          ? getTopConnectedNodes(topicUniverseGraph, 5).map((n) => ({
               topic: n.topic,
               summary: n.summary,
               connections: n.connCount,
@@ -354,13 +620,18 @@ export default function Home() {
       } else {
         setData(result);
         setIndex(0);
-        setRefinement(null);
-        setRefinementCache({});
+        setExpansions({});
+        setExpansionCache({});
+        setExpansionErrors({});
+        setExpansionLoading(null);
+        setCurrentTopicNodeId(null);
         setShowHook(true);
         setViewMode('cards');
         setView('normal');
         setTreeFocusCardIndex(null);
         setTreeSelectedBranch(null);
+        setTreeSelectedNodeId(null);
+        setMapSelectedExpansionNodeId(null);
         setChatMessages([]);
         setChatInput('');
         setQuizData(null);
@@ -380,7 +651,9 @@ export default function Home() {
 
         // Save topic to knowledge graph
         const { graph: updatedGraph, nodeId } = upsertNode(kgTopicName, result.topic_summary || topic);
+        setCurrentTopicNodeId(nodeId);
         setKnowledgeGraph({ ...updatedGraph });
+        persistMainCardNodes(result.cards || [], nodeId, kgTopicName, result.topic_summary || topic);
 
         // Fire-and-forget: find connections to existing topics
         const otherNodes = updatedGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
@@ -417,16 +690,56 @@ export default function Home() {
     setLoading(false);
   };
 
-  const handleRefine = async (action: 'drill' | 'simplify' | 'example') => {
+  const expansionAccent: Record<ExpansionAction, string> = {
+    simplify: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    example: 'border-amber-200 bg-amber-50 text-amber-700',
+    drill: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    reexplain: 'border-rose-200 bg-rose-50 text-rose-700',
+  };
+
+  const handleExpansion = async (action: ExpansionAction) => {
     if (!data) return;
 
-    const cacheKey = `${index}:${action}`;
-    if (refinementCache[cacheKey]) {
-      setRefinement(refinementCache[cacheKey]);
+    const cacheKey = `${index}:${view}:${action}`;
+    if (expansions[index]?.action === action) {
+      setExpansions((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+      setExpansionErrors((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
       return;
     }
 
-    setIsRefining(true);
+    if (expansionCache[cacheKey]) {
+      const cachedCards = persistExpansionNodes(index, action, expansionCache[cacheKey]);
+      setExpansions((prev) => ({
+        ...prev,
+        [index]: { action, cards: cachedCards, activeIndex: 0 },
+      }));
+      setExpansionErrors((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+      return;
+    }
+
+    setExpansionLoading({ cardIndex: index, action });
+    setExpansions((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+    setExpansionErrors((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
     setError(null);
 
     const currentText =
@@ -443,10 +756,13 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action,
+          action: 'expand',
+          expansionAction: action,
+          cardTitle: asText(data.cards[index].title),
           currentContent: currentText,
           about,
           persona: getActivePersona(),
+          difficulty,
           context,
         }),
       });
@@ -454,77 +770,55 @@ export default function Home() {
       const result = await res.json();
 
       if (result.error) {
-        setError(`Refinement failed: ${result.error}`);
-      } else {
-        setRefinement(result.newContent);
-        setRefinementCache((prev) => ({
+        setExpansionErrors((prev) => ({
           ...prev,
-          [cacheKey]: result.newContent,
+          [index]: `Expansion failed: ${result.error}`,
         }));
-      }
-    } catch (e) {
-      console.error(e);
-      setError('Refinement failed. Please try again.');
-    }
-
-    setIsRefining(false);
-  };
-
-  const handleRegenerateCard = async () => {
-    if (!data) return;
-    setIsRegenerating(true);
-    setError(null);
-
-    const card = data.cards[index];
-
-    try {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'regenerate_weak',
-          weakCards: [
-            {
-              id: card.id,
-              title: asText(card.title),
-              content: asText(card.content),
-            },
-          ],
-          about,
-          persona: getActivePersona(),
-          context,
-        }),
-      });
-
-      const result = await res.json();
-
-      if (result.error) {
-        setError(`Regeneration failed: ${result.error}`);
       } else {
-        const regen = result.regenerated?.[0];
-        if (regen) {
-          const updatedCards = data.cards.map((c, i) =>
-            i === index ? { ...c, ...regen } : c,
-          );
-          setData({ ...data, cards: updatedCards });
-          setRefinement(null);
-          setShowHook(true);
-
-          setRefinementCache((prev) => {
-            const next = { ...prev };
-            delete next[`${index}:simplify`];
-            delete next[`${index}:example`];
-            delete next[`${index}:drill`];
-            return next;
-          });
+        const cards = Array.isArray(result.cards) ? result.cards : [];
+        if (cards.length !== 2) {
+          setExpansionErrors((prev) => ({
+            ...prev,
+            [index]: 'Expansion returned an unexpected shape. Please try again.',
+          }));
+        } else {
+          const enrichedCards = persistExpansionNodes(index, action, cards);
+          setExpansions((prev) => ({
+            ...prev,
+            [index]: { action, cards: enrichedCards, activeIndex: 0 },
+          }));
+          setExpansionCache((prev) => ({
+            ...prev,
+            [cacheKey]: enrichedCards,
+          }));
         }
       }
     } catch (e) {
       console.error(e);
-      setError('Regeneration failed. Please try again.');
+      setExpansionErrors((prev) => ({
+        ...prev,
+        [index]: 'Expansion failed. Please try again.',
+      }));
     }
 
-    setIsRegenerating(false);
+    setExpansionLoading((current) =>
+      current?.cardIndex === index && current.action === action ? null : current,
+    );
+  };
+
+  const moveExpansion = (cardIndex: number, direction: -1 | 1) => {
+    setExpansions((prev) => {
+      const panel = prev[cardIndex];
+      if (!panel) return prev;
+      const nextIndex = Math.min(
+        Math.max(panel.activeIndex + direction, 0),
+        panel.cards.length - 1,
+      );
+      return {
+        ...prev,
+        [cardIndex]: { ...panel, activeIndex: nextIndex },
+      };
+    });
   };
 
   const resetNavigation = (
@@ -532,12 +826,14 @@ export default function Home() {
     newView?: 'normal' | 'simpler' | 'detailed' | 'visual',
   ) => {
     setIndex(newIndex);
-    setRefinement(null);
     setView(newView || 'normal');
     setShowHook(true);
   };
 
   const getTreeBranchContent = () => {
+    if (treeSelectedNodeId) {
+      return knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.summary || '';
+    }
     if (!data || treeFocusCardIndex === null || treeSelectedBranch === null)
       return '';
     const card = data.cards[treeFocusCardIndex];
@@ -552,9 +848,10 @@ export default function Home() {
     if (!data || !chatInput.trim()) return;
 
     const userMessage = chatInput.trim();
+    const questionId = `question-${Date.now()}`;
     const nextHistory: ChatMessage[] = [
       ...chatMessages,
-      { role: 'user', text: userMessage },
+      { id: questionId, role: 'user', text: userMessage },
     ];
 
     setChatMessages(nextHistory);
@@ -567,7 +864,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'chat',
+          action: 'question_cards',
           topic,
           about,
           persona: getActivePersona(),
@@ -585,10 +882,19 @@ export default function Home() {
       if (result.error) {
         setError(`Chat failed: ${result.error}`);
       } else {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'assistant', text: result.reply },
-        ]);
+        const answerCards = Array.isArray(result.cards) ? result.cards : [];
+        if (answerCards.length === 0) {
+          setError('Chat failed: answer cards were not generated. Please try again.');
+        } else {
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: `answer-${Date.now()}`,
+              role: 'assistant',
+              cards: answerCards,
+            },
+          ]);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -687,14 +993,17 @@ export default function Home() {
       if (result.error) {
         setError(`Remediation failed: ${result.error}`);
       } else {
+        const reviewCards = Array.isArray(result.cards) ? result.cards : [];
+        const allReviewCards = [...data.cards.slice(7), ...reviewCards];
         setData((prev) =>
           prev
             ? {
                 ...prev,
-                cards: [...prev.cards, ...result.cards],
+                cards: [...prev.cards, ...reviewCards],
               }
             : prev
         );
+        persistReviewNodes(allReviewCards);
       }
     } catch (e) {
       console.error(e);
@@ -794,7 +1103,7 @@ export default function Home() {
             </p>
           </div>
 
-          <ErrorBanner />
+          {errorBanner}
 
           <div>
             <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
@@ -964,7 +1273,7 @@ export default function Home() {
           </div>
 
           {/* Memory mode toggle */}
-          {knowledgeGraph.nodes.length > 0 && (
+          {topicUniverseGraph.nodes.length > 0 && (
             <button
               onClick={() => setUseMemory((v) => !v)}
               className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
@@ -979,7 +1288,7 @@ export default function Home() {
                   Use Knowledge Memory {useMemory ? '(ON)' : '(OFF)'}
                 </p>
                 <p className="text-[10px] mt-0.5 opacity-70">
-                  Bridge this topic to your {knowledgeGraph.nodes.length} previous topics
+                  Bridge this topic to your {topicUniverseGraph.nodes.length} previous topics
                 </p>
               </div>
               <div className={`w-8 h-4 rounded-full transition-colors shrink-0 ${useMemory ? 'bg-indigo-500' : 'bg-slate-300'}`}>
@@ -1033,6 +1342,47 @@ export default function Home() {
   quizAnchorIndex !== null
     ? index === quizAnchorIndex
     : index === CARD_COUNT - 1;
+  const currentExpansion = expansions[index];
+  const currentExpansionError = expansionErrors[index];
+  const activeExpansionLoading =
+    expansionLoading?.cardIndex === index ? expansionLoading : null;
+  const mainTreeCards = data?.cards.slice(0, 7) ?? [];
+  const reviewNodes = getReviewNodes();
+  const topLevelTreeCount = mainTreeCards.length + (reviewNodes.length > 0 ? 1 : 0);
+  const TREE_NODE_WIDTH = 160;
+  const TREE_NODE_GAP = 18;
+  const getSiblingRowWidth = (count: number) =>
+    Math.max(TREE_NODE_WIDTH, count * TREE_NODE_WIDTH + Math.max(count - 1, 0) * TREE_NODE_GAP);
+  const getGroupBranchWidth = (groupId: string) =>
+    getSiblingRowWidth(Math.max(getExpansionNodesForGroup(groupId).length, 1));
+  const getCardBranchWidth = (cardIndex: number) => {
+    const groups = getExpansionGroupsForCard(cardIndex);
+    if (groups.length === 0) return TREE_NODE_WIDTH;
+    return Math.max(
+      TREE_NODE_WIDTH,
+      groups.reduce((sum, group) => sum + getGroupBranchWidth(group.id), 0) +
+        Math.max(groups.length - 1, 0) * TREE_NODE_GAP,
+    );
+  };
+  const reviewBranchWidth = reviewNodes.length > 0 ? getSiblingRowWidth(reviewNodes.length) : 0;
+  const topLevelBranchWidths = [
+    ...mainTreeCards.map((_, cardIndex) => getCardBranchWidth(cardIndex)),
+    ...(reviewNodes.length > 0 ? [reviewBranchWidth] : []),
+  ];
+  const topLevelContentWidth =
+    topLevelBranchWidths.reduce((sum, width) => sum + width, 0) +
+    Math.max(topLevelBranchWidths.length - 1, 0) * TREE_NODE_GAP;
+  const topLevelTreeWidth = Math.max(
+    700,
+    topLevelContentWidth,
+  );
+  const getBranchCenterX = (widths: number[], index: number) =>
+    widths.slice(0, index).reduce((sum, width) => sum + width, 0) +
+    index * TREE_NODE_GAP +
+    widths[index] / 2;
+  const getTopLevelBranchCenterX = (index: number) =>
+    (topLevelTreeWidth - topLevelContentWidth) / 2 +
+    getBranchCenterX(topLevelBranchWidths, index);
 
 
   // MAIN APP VIEW
@@ -1044,6 +1394,11 @@ export default function Home() {
             onClick={() => {
               setData(null);
               setError(null);
+              setExpansions({});
+              setExpansionCache({});
+              setExpansionErrors({});
+              setExpansionLoading(null);
+              setCurrentTopicNodeId(null);
               setChatMessages([]);
               setChatInput('');
               setQuizData(null);
@@ -1098,6 +1453,7 @@ export default function Home() {
                 setViewMode('tree');
                 setTreeFocusCardIndex(null);
                 setTreeSelectedBranch(null);
+                setTreeSelectedNodeId(null);
               }}
               aria-label="Knowledge tree view"
               aria-pressed={viewMode === 'tree'}
@@ -1139,7 +1495,7 @@ export default function Home() {
           </nav>
         </div>
 
-        <ErrorBanner />
+        {errorBanner}
 
         {/* TREE MODE */}
         {viewMode === 'tree' && (
@@ -1163,6 +1519,7 @@ export default function Home() {
                     onClick={() => {
                       setTreeFocusCardIndex(null);
                       setTreeSelectedBranch(null);
+                      setTreeSelectedNodeId(null);
                     }}
                     className="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-300 transition-colors"
                   >
@@ -1191,28 +1548,21 @@ export default function Home() {
 
                     <div
                       className="relative flex justify-center mb-3"
-                      style={{ height: '40px' }}
+                      style={{ width: `${topLevelTreeWidth}px`, height: '40px' }}
                     >
                       <svg
-                        width="100%"
+                        width={topLevelTreeWidth}
                         height="40"
                         className="absolute inset-0"
-                        style={{
-                          minWidth: `${
-                            Math.max((data?.cards.length || 1) * 180, 700)
-                          }px`,
-                        }}
                       >
-                        {data?.cards.map((_, i) => {
-                          const total = data.cards.length || 1;
-                          const cardWidth = 100 / total;
-                          const centerX = cardWidth * i + cardWidth / 2;
+                        {Array.from({ length: topLevelTreeCount }).map((_, i) => {
+                          const centerX = getTopLevelBranchCenterX(i);
                           return (
                             <line
                               key={i}
-                              x1="50%"
+                              x1={topLevelTreeWidth / 2}
                               y1="0"
-                              x2={`${centerX}%`}
+                              x2={centerX}
                               y2="40"
                               stroke="#cbd5e1"
                               strokeWidth="1.5"
@@ -1224,35 +1574,192 @@ export default function Home() {
                     </div>
 
                     <div
-                      className="flex gap-4 justify-center mb-3"
+                      className="flex justify-center gap-[18px] mb-3 items-start"
                       style={{
-                        minWidth: `${
-                          Math.max((data?.cards.length || 1) * 180, 700)
-                        }px`,
+                        width: `${topLevelTreeWidth}px`,
                       }}
                     >
-                      {data?.cards.map((card, i) => (
-                        <button
-                          key={i}
-                          onClick={() => {
-                            setTreeFocusCardIndex(i);
-                            setTreeSelectedBranch('normal');
-                          }}
-                          className="w-[160px] min-w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md"
-                        >
-                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
-                            {i + 1}
+                      {mainTreeCards.map((card, i) => {
+                        const expansionGroups = getExpansionGroupsForCard(i);
+                        const cardBranchWidth = getCardBranchWidth(i);
+                        const groupWidths = expansionGroups.map((group) => getGroupBranchWidth(group.id));
+                        return (
+                          <div
+                            key={i}
+                            className="flex flex-col items-center"
+                            style={{ width: `${cardBranchWidth}px`, minWidth: `${cardBranchWidth}px` }}
+                          >
+                            <button
+                              onClick={() => {
+                                setTreeFocusCardIndex(i);
+                                setTreeSelectedBranch('normal');
+                                setTreeSelectedNodeId(null);
+                              }}
+                              className="w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md"
+                            >
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
+                                {i + 1}
+                              </div>
+                              <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">
+                                {asText(card.title)}
+                              </p>
+                            </button>
+
+                            {expansionGroups.length > 0 && (
+                              <div className="w-full flex flex-col items-center">
+                                <div className="relative w-full" style={{ height: '34px' }}>
+                                  <svg width={cardBranchWidth} height="34" className="absolute inset-0">
+                                    {expansionGroups.map((_, groupIndex) => (
+                                      <line
+                                        key={groupIndex}
+                                        x1={cardBranchWidth / 2}
+                                        y1="0"
+                                        x2={getBranchCenterX(groupWidths, groupIndex)}
+                                        y2="34"
+                                        stroke="#bae6fd"
+                                        strokeWidth="1.5"
+                                      />
+                                    ))}
+                                  </svg>
+                                </div>
+                                <div className="w-full flex justify-center gap-[18px] items-start">
+                                  {expansionGroups.map((group, groupIndex) => {
+                                    const groupEdge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                                    const childNodes = getExpansionNodesForGroup(group.id);
+                                    const groupWidth = groupWidths[groupIndex];
+                                    const childWidths = childNodes.map(() => TREE_NODE_WIDTH);
+                                    return (
+                                      <div
+                                        key={group.id}
+                                        className="flex flex-col items-center"
+                                        style={{ width: `${groupWidth}px`, minWidth: `${groupWidth}px` }}
+                                      >
+                                        <button
+                                          onClick={() => {
+                                            setTreeFocusCardIndex(i);
+                                            setTreeSelectedBranch(null);
+                                            setTreeSelectedNodeId(group.id);
+                                          }}
+                                          className="w-[160px] p-2.5 rounded-xl border text-left transition-all shadow-sm border-sky-200 bg-sky-50 hover:border-sky-400 hover:bg-sky-100"
+                                        >
+                                          <p className="text-[9px] font-black text-sky-700 uppercase tracking-widest mb-1">
+                                            {groupEdge?.label || group.topic}
+                                          </p>
+                                          <p className="text-[10px] font-bold text-sky-950 leading-tight">
+                                            {group.topic}
+                                          </p>
+                                        </button>
+                                        {childNodes.length > 0 && (
+                                          <div className="w-full flex flex-col items-center">
+                                            <div className="relative w-full" style={{ height: '30px' }}>
+                                              <svg width={groupWidth} height="30" className="absolute inset-0">
+                                                {childNodes.map((_, childIndex) => (
+                                                  <line
+                                                    key={childIndex}
+                                                    x1={groupWidth / 2}
+                                                    y1="0"
+                                                    x2={getBranchCenterX(childWidths, childIndex)}
+                                                    y2="30"
+                                                    stroke="#bae6fd"
+                                                    strokeWidth="1.5"
+                                                  />
+                                                ))}
+                                              </svg>
+                                            </div>
+                                            <div className="w-full flex justify-center gap-[18px]">
+                                              {childNodes.map((node, childIndex) => (
+                                                <button
+                                                  key={node.id}
+                                                  onClick={() => {
+                                                    setTreeFocusCardIndex(i);
+                                                    setTreeSelectedBranch(null);
+                                                    setTreeSelectedNodeId(node.id);
+                                                  }}
+                                                  className="w-[160px] p-2 rounded-lg border text-left transition-all border-cyan-200 bg-white hover:border-cyan-400 hover:bg-cyan-50"
+                                                >
+                                                  <p className="text-[9px] font-black text-cyan-700 uppercase tracking-widest mb-1">
+                                                    Card {childIndex + 1}
+                                                  </p>
+                                                  <p className="text-[10px] font-bold text-cyan-950 leading-tight line-clamp-2">
+                                                    {node.topic.replace(/^[^:]+:\s*/, '')}
+                                                  </p>
+                                                </button>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">
-                            {asText(card.title)}
-                          </p>
-                        </button>
-                      ))}
+                        );
+                      })}
+
+                      {reviewNodes.length > 0 && (
+                        <div
+                          className="flex flex-col items-center"
+                          style={{ width: `${reviewBranchWidth}px`, minWidth: `${reviewBranchWidth}px` }}
+                        >
+                          <div className="w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-teal-300 bg-teal-50">
+                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-teal-200 text-teal-800">
+                              R
+                            </div>
+                            <p className="text-xs font-black text-teal-950 leading-tight">
+                              Review
+                            </p>
+                            <p className="text-[10px] text-teal-700 mt-1">
+                              Reinforcement branch
+                            </p>
+                          </div>
+
+                          <div className="w-full flex flex-col items-center">
+                            <div className="relative w-full" style={{ height: '34px' }}>
+                              <svg width={reviewBranchWidth} height="34" className="absolute inset-0">
+                                {reviewNodes.map((_, reviewIndex) => (
+                                  <line
+                                    key={reviewIndex}
+                                    x1={reviewBranchWidth / 2}
+                                    y1="0"
+                                    x2={getBranchCenterX(reviewNodes.map(() => TREE_NODE_WIDTH), reviewIndex)}
+                                    y2="34"
+                                    stroke="#99f6e4"
+                                    strokeWidth="1.5"
+                                  />
+                                ))}
+                              </svg>
+                            </div>
+                            <div className="w-full flex justify-center gap-[18px]">
+                              {reviewNodes.map((node, reviewIndex) => (
+                                <button
+                                  key={node.id}
+                                  onClick={() => {
+                                    const cardIndex = node.cardIndex ?? 7 + reviewIndex;
+                                    resetNavigation(Math.min(cardIndex, CARD_COUNT - 1));
+                                    setViewMode('cards');
+                                  }}
+                                  className="w-[160px] p-2.5 rounded-xl border text-left transition-all shadow-sm border-teal-200 bg-white hover:border-teal-400 hover:bg-teal-50"
+                                >
+                                  <p className="text-[9px] font-black text-teal-700 uppercase tracking-widest mb-1">
+                                    Review {reviewIndex + 1}
+                                  </p>
+                                  <p className="text-[10px] font-bold text-teal-950 leading-tight line-clamp-2">
+                                    {node.topic.replace(/^Review \d+:\s*/, '')}
+                                  </p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <p className="text-center text-xs text-slate-400 mt-6">
-                      Click a flashcard node to expand its explanation tree
+                      Generated refinement branches fan out under their parent cards
                     </p>
+
                   </div>
                 </div>
               ) : (
@@ -1261,7 +1768,10 @@ export default function Home() {
                   <div className="min-w-0">
                     <div className="flex justify-center mb-4">
                       <button
-                        onClick={() => setTreeSelectedBranch('normal')}
+                        onClick={() => {
+                          setTreeSelectedBranch('normal');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`px-6 py-4 rounded-2xl border-2 text-left shadow-md max-w-md w-full transition-all ${
                           treeSelectedBranch === 'normal'
                             ? 'border-indigo-600 bg-indigo-50'
@@ -1314,7 +1824,10 @@ export default function Home() {
 
                     <div className="flex justify-center gap-3 flex-wrap">
                       <button
-                        onClick={() => setTreeSelectedBranch('simpler')}
+                        onClick={() => {
+                          setTreeSelectedBranch('simpler');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'simpler'
                             ? 'bg-emerald-100 border-emerald-500 shadow-sm'
@@ -1333,7 +1846,10 @@ export default function Home() {
                       </button>
 
                       <button
-                        onClick={() => setTreeSelectedBranch('detailed')}
+                        onClick={() => {
+                          setTreeSelectedBranch('detailed');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'detailed'
                             ? 'bg-indigo-100 border-indigo-500 shadow-sm'
@@ -1352,7 +1868,10 @@ export default function Home() {
                       </button>
 
                       <button
-                        onClick={() => setTreeSelectedBranch('visual')}
+                        onClick={() => {
+                          setTreeSelectedBranch('visual');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'visual'
                             ? 'bg-amber-100 border-amber-500 shadow-sm'
@@ -1370,6 +1889,41 @@ export default function Home() {
                         </p>
                       </button>
                     </div>
+
+                    {getExpansionGroupsForCard(treeFocusCardIndex ?? 0).length > 0 && (
+                      <div className="mt-8">
+                        <p className="text-center text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">
+                          Generated Refinement Branches
+                        </p>
+                        <div className="flex justify-center gap-3 flex-wrap">
+                          {getExpansionGroupsForCard(treeFocusCardIndex ?? 0).map((group) => {
+                            const edge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                            const childCount = getExpansionNodesForGroup(group.id).length;
+                            return (
+                              <button
+                                key={group.id}
+                                onClick={() => {
+                                  setTreeSelectedNodeId(group.id);
+                                  setTreeSelectedBranch(null);
+                                }}
+                                className={`w-40 p-3 rounded-xl border text-center transition-all ${
+                                  treeSelectedNodeId === group.id
+                                    ? 'bg-sky-100 border-sky-500 shadow-sm'
+                                    : 'bg-sky-50 border-sky-200 hover:border-sky-400'
+                                }`}
+                              >
+                                <p className="text-[10px] font-black text-sky-700 uppercase tracking-wide">
+                                  {edge?.label || group.topic}
+                                </p>
+                                <p className="text-[10px] text-sky-800 mt-1">
+                                  {childCount} card{childCount !== 1 ? 's' : ''}
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Inline content panel */}
@@ -1378,6 +1932,12 @@ export default function Home() {
                       <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
                         {treeSelectedBranch === 'normal'
                           ? 'Core'
+                          : treeSelectedNodeId
+                          ? knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.type === 'review'
+                            ? 'Review'
+                            : knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.type === 'expansion_group'
+                            ? 'Refinement Branch'
+                            : 'Expansion'
                           : treeSelectedBranch === 'simpler'
                           ? 'Simplify'
                           : treeSelectedBranch === 'detailed'
@@ -1388,7 +1948,9 @@ export default function Home() {
                       </p>
                       <h3 className="text-lg font-black text-slate-800 mt-1">
                         {asText(
-                          data?.cards[treeFocusCardIndex]?.title,
+                          treeSelectedNodeId
+                            ? knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.topic
+                            : data?.cards[treeFocusCardIndex]?.title,
                         )}
                       </h3>
                     </div>
@@ -1418,27 +1980,146 @@ export default function Home() {
         {/* MAP VIEW */}
         {viewMode === 'map' && (
           <div className="grid grid-cols-1 gap-3">
-            {data?.cards.map((card, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  resetNavigation(i);
-                  setViewMode('cards');
-                }}
-                className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all text-left ${
-                  index === i
-                    ? 'border-indigo-600 shadow-lg'
-                    : 'border-slate-100 hover:border-indigo-200'
-                }`}
-              >
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
-                  Step {i + 1}
-                </p>
-                <p className="font-bold text-slate-800">
-                  {asText(card.title)}
-                </p>
-              </button>
-            ))}
+            {mainTreeCards.map((card, i) => {
+              const expansionGroups = getExpansionGroupsForCard(i);
+              return (
+                <div
+                  key={i}
+                  className={`p-6 bg-white rounded-2xl border-2 transition-all text-left ${
+                    index === i
+                      ? 'border-indigo-600 shadow-lg'
+                      : 'border-slate-100 hover:border-indigo-200'
+                  }`}
+                >
+                  <button
+                    onClick={() => {
+                      resetNavigation(i);
+                      setViewMode('cards');
+                    }}
+                    className="w-full flex items-start gap-4 text-left cursor-pointer"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-black shrink-0">
+                      {i + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                        Step {i + 1}
+                      </p>
+                      <p className="font-bold text-slate-800">
+                        {asText(card.title)}
+                      </p>
+                    </div>
+                  </button>
+
+                  {expansionGroups.length > 0 && (
+                    <div className="mt-4 space-y-4 border-t border-slate-100 pt-4">
+                      {expansionGroups.map((group) => {
+                        const edge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                        const childNodes = getExpansionNodesForGroup(group.id);
+                        return (
+                          <div key={group.id} className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-sky-700">
+                                {edge?.label || group.topic}
+                              </span>
+                              <span className="rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-black text-sky-500">
+                                {childNodes.length}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {childNodes.map((node, childIndex) => {
+                                const isSelected = mapSelectedExpansionNodeId === node.id;
+                                return (
+                                  <button
+                                    key={node.id}
+                                    type="button"
+                                    onClick={() =>
+                                      setMapSelectedExpansionNodeId((current) =>
+                                        current === node.id ? null : node.id,
+                                      )
+                                    }
+                                    className={`cursor-pointer rounded-xl border px-3 py-2.5 text-left transition-all ${
+                                      isSelected
+                                        ? 'border-sky-500 bg-sky-50 shadow-sm ring-2 ring-sky-100'
+                                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white hover:shadow-sm'
+                                    }`}
+                                    aria-pressed={isSelected}
+                                  >
+                                    <p className={`text-[9px] font-black uppercase tracking-widest ${
+                                      isSelected ? 'text-sky-700' : 'text-slate-400'
+                                    }`}>
+                                      Sub-card {childIndex + 1}
+                                    </p>
+                                    <p className="mt-1 text-xs font-bold text-slate-700 leading-snug">
+                                      {node.topic.replace(/^[^:]+:\s*/, '')}
+                                    </p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {childNodes.map((node) =>
+                              mapSelectedExpansionNodeId === node.id ? (
+                                <div
+                                  key={`${node.id}-preview`}
+                                  className="rounded-xl border border-sky-100 bg-white px-3 py-3 text-sm text-slate-600 shadow-sm"
+                                >
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-sky-600 mb-1">
+                                    Selected Expansion
+                                  </p>
+                                  <p className="leading-relaxed">
+                                    {node.summary}
+                                  </p>
+                                </div>
+                              ) : null,
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {reviewNodes.length > 0 && (
+              <div className="mt-2 space-y-3">
+                <div className="px-2">
+                  <p className="text-xs font-black text-teal-600 uppercase tracking-widest">
+                    Review
+                  </p>
+                  <p className="text-sm font-bold text-slate-500">
+                    Reinforcement cards generated from quiz misses
+                  </p>
+                </div>
+
+                {reviewNodes.map((node, reviewIndex) => (
+                  <button
+                    key={node.id}
+                    onClick={() => {
+                      resetNavigation(Math.min(node.cardIndex ?? 7 + reviewIndex, CARD_COUNT - 1));
+                      setViewMode('cards');
+                    }}
+                    className="w-full p-6 bg-teal-50 rounded-2xl border-2 border-teal-100 cursor-pointer transition-all text-left hover:border-teal-300 hover:bg-white"
+                  >
+                    <div className="flex items-start gap-4">
+                      <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center text-xs font-black shrink-0">
+                        R{reviewIndex + 1}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-teal-600 uppercase tracking-widest mb-1">
+                          Review {reviewIndex + 1}
+                        </p>
+                        <p className="font-bold text-teal-950">
+                          {node.topic.replace(/^Review \d+:\s*/, '')}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1479,22 +2160,62 @@ export default function Home() {
                   </div>
                 )}
 
-                {chatMessages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'ml-auto bg-indigo-600 text-white'
-                        : 'bg-white border border-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {msg.text}
-                  </div>
-                ))}
+                {chatMessages.map((msg, i) =>
+                  msg.role === 'user' ? (
+                    <div
+                      key={msg.id || i}
+                      className="max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ml-auto bg-indigo-600 text-white"
+                    >
+                      {msg.text}
+                    </div>
+                  ) : (
+                    <div
+                      key={msg.id || i}
+                      className="max-w-full rounded-3xl border border-indigo-100 bg-white shadow-sm overflow-hidden"
+                    >
+                      <div className="px-4 py-3 border-b border-indigo-50 bg-indigo-50">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3" />
+                          Answer Cards
+                        </p>
+                      </div>
+
+                      {Array.isArray(msg.cards) && msg.cards.length > 0 ? (
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {msg.cards.map((card, cardIndex) => (
+                            <div
+                              key={`${msg.id}-card-${cardIndex}`}
+                              className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                            >
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                                Card {cardIndex + 1} / {msg.cards?.length}
+                              </p>
+                              <h4 className="text-sm font-black text-slate-800 mb-2">
+                                {card.title || `Answer ${cardIndex + 1}`}
+                              </h4>
+                              <div className="prose prose-sm text-slate-700 max-w-none">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkMath]}
+                                  rehypePlugins={[rehypeKatex]}
+                                >
+                                  {card.content || 'No answer content was generated for this card.'}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="px-4 py-3 text-sm text-slate-600">
+                          {msg.text || 'No answer cards were generated.'}
+                        </div>
+                      )}
+                    </div>
+                  ),
+                )}
 
                 {chatLoading && (
                   <div className="bg-white border border-slate-200 text-slate-700 max-w-[85%] rounded-2xl px-4 py-3 text-sm">
-                    Thinking...
+                    Building answer cards...
                   </div>
                 )}
               </div>
@@ -1574,105 +2295,86 @@ export default function Home() {
               )}
 
               <div className="min-h-[140px]">
-                {isRefining || isRegenerating ? (
-                  <div className="flex items-center gap-3 text-indigo-500 py-4">
-                    <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
-                    <p className="text-sm font-bold">
-                      {isRegenerating
-                        ? 'Generating fresh explanation...'
-                        : 'AI is tailoring content...'}
+                {view === 'normal' && (
+                  <div className="prose prose-sm text-slate-700">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {asText(currentCard.content)}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {view === 'simpler' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">
+                      Analogy
+                    </p>
+                    <p className="text-slate-600 italic text-base leading-relaxed">
+                      &ldquo;{asText(currentCard.simpler)}&rdquo;
                     </p>
                   </div>
-                ) : refinement ? (
-                  <div className="space-y-3">
-                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" /> AI Refinement
+                )}
+                {view === 'detailed' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">
+                      Deeper Explanation
                     </p>
                     <div className="prose prose-sm text-slate-700">
                       <ReactMarkdown
                         remarkPlugins={[remarkMath]}
                         rehypePlugins={[rehypeKatex]}
                       >
-                        {refinement}
+                        {asText(currentCard.detailed)}
                       </ReactMarkdown>
                     </div>
-                    <button
-                      onClick={() => setRefinement(null)}
-                      className="mt-2 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"
-                    >
-                      <RefreshCcw className="w-3 h-3" /> Back to original
-                    </button>
                   </div>
-                ) : (
-                  <>
-                    {view === 'normal' && (
-                      <div className="prose prose-sm text-slate-700">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkMath]}
-                          rehypePlugins={[rehypeKatex]}
-                        >
-                          {asText(currentCard.content)}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {view === 'simpler' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">
-                          Analogy
-                        </p>
-                        <p className="text-slate-600 italic text-base leading-relaxed">
-                          &ldquo;{asText(currentCard.simpler)}&rdquo;
-                        </p>
-                      </div>
-                    )}
-                    {view === 'detailed' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">
-                          Deeper Explanation
-                        </p>
-                        <div className="prose prose-sm text-slate-700">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {asText(currentCard.detailed)}
-                          </ReactMarkdown>
-                        </div>
-                      </div>
-                    )}
-                    {view === 'visual' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1">
-                          <Terminal className="w-3 h-3" /> Visual / Diagram
-                        </p>
-                        <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
-                          {asText(currentCard.visual).trim() ||
-                            'No visual available for this card.'}
-                        </pre>
-                      </div>
-                    )}
-                  </>
+                )}
+                {view === 'visual' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1">
+                      <Terminal className="w-3 h-3" /> Visual / Diagram
+                    </p>
+                    <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                      {asText(currentCard.visual).trim() ||
+                        'No visual available for this card.'}
+                    </pre>
+                  </div>
                 )}
               </div>
 
-              {!refinement && !isRefining && !isRegenerating && (
-                <div className="space-y-3">
+              <div className="space-y-3">
                   <div className="flex items-center gap-4 flex-wrap">
                     <button
-                      onClick={() => handleRefine('simplify')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors"
+                      onClick={() => handleExpansion('simplify')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'simplify'
+                          ? 'text-emerald-600'
+                          : 'text-slate-400 hover:text-emerald-600'
+                      }`}
                     >
                       <MessageSquare className="w-3 h-3" /> Simplify
                     </button>
                     <button
-                      onClick={() => handleRefine('example')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors"
+                      onClick={() => handleExpansion('example')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'example'
+                          ? 'text-amber-500'
+                          : 'text-slate-400 hover:text-amber-500'
+                      }`}
                     >
                       <Lightbulb className="w-3 h-3" /> Real Example
                     </button>
                     <button
-                      onClick={() => handleRefine('drill')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
+                      onClick={() => handleExpansion('drill')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'drill'
+                          ? 'text-indigo-600'
+                          : 'text-slate-400 hover:text-indigo-600'
+                      }`}
                     >
                       <BrainCircuit className="w-3 h-3" /> Drill Deeper
                     </button>
@@ -1689,8 +2391,13 @@ export default function Home() {
                     </button>
                     <div className="ml-auto">
                       <button
-                        onClick={handleRegenerateCard}
-                        className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors"
+                        onClick={() => handleExpansion('reexplain')}
+                        disabled={!!activeExpansionLoading}
+                        className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                          currentExpansion?.action === 'reexplain'
+                            ? 'text-rose-600'
+                            : 'text-slate-300 hover:text-rose-500'
+                        }`}
                         title="Re-explain this card with a completely different approach"
                       >
                         <RefreshCcw className="w-3 h-3" /> Re-explain
@@ -1717,8 +2424,119 @@ export default function Home() {
                       title={currentCard?.source_anchor ? `Back to: "${currentCard.source_anchor}"` : `Open source: ${sourceUrl}`}
                     >
                       <ExternalLink className="w-3 h-3" /> Back to Source
-                    </button>
+                      </button>
                   )}
+                </div>
+
+              {activeExpansionLoading && (
+                <div className="border border-slate-200 bg-slate-50 rounded-2xl p-4 flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
+                  <p className="text-sm font-bold text-slate-600">
+                    Building {expansionLabels[activeExpansionLoading.action]} expansion cards...
+                  </p>
+                </div>
+              )}
+
+              {currentExpansionError && !activeExpansionLoading && (
+                <div className="border border-red-200 bg-red-50 rounded-2xl p-4 flex items-start justify-between gap-3">
+                  <p className="text-sm font-bold text-red-700">{currentExpansionError}</p>
+                  <button
+                    onClick={() => clearExpansionForCard(index)}
+                    className="text-xs font-black uppercase text-red-500 hover:text-red-700"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {currentExpansion && !activeExpansionLoading && (
+                <div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-200">
+                  <div className={`px-6 py-4 border-b ${expansionAccent[currentExpansion.action]}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        Expansion - {expansionLabels[currentExpansion.action]}
+                      </p>
+                      <button
+                        onClick={() => clearExpansionForCard(index)}
+                        className="text-[10px] font-black uppercase opacity-70 hover:opacity-100"
+                      >
+                        Collapse
+                      </button>
+                    </div>
+
+                  </div>
+
+                  {currentExpansion.cards.length === 0 ? (
+                    <div className="p-6">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-bold text-slate-500">
+                        No expansion content came back. Try the action again.
+                      </div>
+                    </div>
+                  ) : (() => {
+                    const miniIndex = currentExpansion.activeIndex;
+                    const miniCard = currentExpansion.cards[miniIndex];
+                    return (
+                      <>
+                        <div className="p-6 space-y-4 min-h-[180px]">
+                          <div>
+                            <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                              SUB-CARD {miniIndex + 1} / {currentExpansion.cards.length}
+                            </p>
+                            <h3 className="text-xl font-black text-slate-800">
+                              {miniCard.title || `${expansionLabels[currentExpansion.action]} ${miniIndex + 1}`}
+                            </h3>
+                          </div>
+                          <div className="prose prose-sm text-slate-700">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkMath]}
+                              rehypePlugins={[rehypeKatex]}
+                            >
+                              {miniCard.content || 'No detail was generated for this mini-card.'}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-100 p-4 flex items-center gap-4">
+                          <button
+                            onClick={() => moveExpansion(index, -1)}
+                            disabled={miniIndex === 0}
+                            className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+                          <div className="flex-1 flex justify-center gap-2">
+                            {currentExpansion.cards.map((_, dotIndex) => (
+                              <button
+                                key={dotIndex}
+                                onClick={() =>
+                                  setExpansions((prev) => ({
+                                    ...prev,
+                                    [index]: {
+                                      ...currentExpansion,
+                                      activeIndex: dotIndex,
+                                    },
+                                  }))
+                                }
+                                className={`h-2 rounded-full transition-all bg-indigo-400 ${
+                                  dotIndex === miniIndex
+                                    ? 'w-4 opacity-100'
+                                    : 'w-2 opacity-30 hover:opacity-70'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => moveExpansion(index, 1)}
+                            disabled={miniIndex === currentExpansion.cards.length - 1}
+                            className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                          >
+                            <ChevronRight className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -1828,28 +2646,28 @@ export default function Home() {
             <div className="border-t border-slate-100 p-4 space-y-4">
               <div className="flex gap-1.5" role="tablist" aria-label="Explanation mode">
                 {(['simpler', 'normal', 'detailed', 'visual'] as const).map(
-                  (v) => {
-                    const label = v === 'simpler' ? 'Analogy' : v === 'normal' ? 'Core' : v === 'detailed' ? 'Deeper' : 'Visual';
-                    return (
-                      <button
-                        key={v}
-                        role="tab"
-                        aria-selected={view === v}
-                        aria-label={`${label} explanation`}
-                        onClick={() => {
-                          setView(v);
-                          setRefinement(null);
-                        }}
-                        className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
-                          view === v
-                            ? 'bg-indigo-600 text-white shadow-md'
-                            : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  },
+                  (v) => (
+                    <button
+                      key={v}
+                      onClick={() => {
+                        setView(v);
+                        clearExpansionForCard(index);
+                      }}
+                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+                        view === v
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700'
+                      }`}
+                    >
+                      {v === 'simpler'
+                        ? 'Analogy'
+                        : v === 'normal'
+                        ? 'Core'
+                        : v === 'detailed'
+                        ? 'Deeper'
+                        : 'Visual'}
+                    </button>
+                  ),
                 )}
               </div>
 
@@ -1898,7 +2716,7 @@ export default function Home() {
           <div className="fixed inset-0 z-50 bg-slate-900 flex">
             {/* 3D Globe */}
             <div className="flex-1 overflow-hidden">
-              {knowledgeGraph.nodes.length === 0 ? (
+              {topicUniverseGraph.nodes.length === 0 ? (
                 <div className="w-full h-full flex flex-col items-center justify-center text-center p-8 space-y-4">
                   <Globe className="w-16 h-16 text-slate-600" />
                   <p className="text-slate-400 font-bold text-lg">Your Knowledge Universe is Empty</p>
@@ -1914,8 +2732,8 @@ export default function Home() {
                 </div>
               ) : (
                 <KnowledgeGlobe
-                  nodes={knowledgeGraph.nodes}
-                  edges={knowledgeGraph.edges}
+                  nodes={topicUniverseGraph.nodes}
+                  edges={topicUniverseGraph.edges}
                   onNodeClick={(node) => setGlobeSelectedNode(node)}
                 />
               )}
@@ -1932,7 +2750,7 @@ export default function Home() {
                 </button>
                 <h2 className="text-white font-black text-base">Knowledge Universe</h2>
                 <p className="text-slate-400 text-xs mt-1">
-                  {knowledgeGraph.nodes.length} topics · {knowledgeGraph.edges.length} connections
+                  {topicUniverseGraph.nodes.length} topics · {topicUniverseGraph.edges.length} connections
                 </p>
               </div>
 
@@ -1969,12 +2787,12 @@ export default function Home() {
                       </span>
                     </div>
                     {/* Show edges from this node */}
-                    {knowledgeGraph.edges
+                    {topicUniverseGraph.edges
                       .filter((e) => e.source === globeSelectedNode.id || e.target === globeSelectedNode.id)
                       .slice(0, 3)
                       .map((e, i) => {
                         const otherId = e.source === globeSelectedNode.id ? e.target : e.source;
-                        const other = knowledgeGraph.nodes.find((n) => n.id === otherId);
+                        const other = topicUniverseGraph.nodes.find((n) => n.id === otherId);
                         return (
                           <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
                             <span className="text-indigo-400 font-bold">{other?.topic}</span>: {e.bridge}
@@ -1985,15 +2803,15 @@ export default function Home() {
                 )}
 
                 {/* Strongest connections */}
-                {knowledgeGraph.edges.length > 0 && (
+                {topicUniverseGraph.edges.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Strongest Connections</p>
-                    {[...knowledgeGraph.edges]
+                    {[...topicUniverseGraph.edges]
                       .sort((a, b) => b.weight - a.weight)
                       .slice(0, 4)
                       .map((e, i) => {
-                        const src = knowledgeGraph.nodes.find((n) => n.id === e.source);
-                        const tgt = knowledgeGraph.nodes.find((n) => n.id === e.target);
+                        const src = topicUniverseGraph.nodes.find((n) => n.id === e.source);
+                        const tgt = topicUniverseGraph.nodes.find((n) => n.id === e.target);
                         return (
                           <div key={i} className="bg-slate-700/60 rounded-xl p-3 space-y-1">
                             <div className="flex items-center gap-1.5">
@@ -2013,11 +2831,11 @@ export default function Home() {
                 )}
 
                 {/* Knowledge gaps */}
-                {getIsolatedNodes(knowledgeGraph).length > 0 && (
+                {isolatedTopicNodes.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Knowledge Gaps</p>
                     <p className="text-slate-500 text-[10px]">These topics have no connections yet. Try learning something related.</p>
-                    {getIsolatedNodes(knowledgeGraph).map((n) => (
+                    {isolatedTopicNodes.map((n) => (
                       <div key={n.id} className="flex items-center gap-2 px-3 py-2 bg-slate-700/40 rounded-xl">
                         <div className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
                         <span className="text-slate-300 text-xs font-bold truncate">{n.topic}</span>

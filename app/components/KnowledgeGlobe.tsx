@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import type { KnowledgeNode, KnowledgeEdge } from '../lib/knowledgeGraph';
 import { getConnectionCount } from '../lib/knowledgeGraph';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ForceGraph3D = require('react-force-graph-3d').default;
 
 export interface GlobeNode extends KnowledgeNode {
@@ -17,12 +18,30 @@ interface Props {
   onNodeClick: (node: GlobeNode) => void;
 }
 
+type ForceGraphInstance = {
+  d3Force: (name: string) =>
+    | {
+        distance: (fn: (link: KnowledgeEdge) => number) => void;
+      }
+    | undefined;
+  d3ReheatSimulation: () => void;
+};
+
 // Color palette by mastery tier
 function nodeColor(connections: number, timesStudied: number): string {
   if (connections === 0) return '#334155';
   if (timesStudied >= 3 || connections >= 4) return '#f59e0b'; // gold = mastered
   if (connections >= 2) return '#818cf8';                       // indigo = connected
   return '#22d3ee';                                             // cyan = new
+}
+
+function typedNodeColor(node: GlobeNode): string {
+  if (node.type === 'review') return '#14b8a6';
+  if (node.type === 'review_group') return '#0f766e';
+  if (node.type === 'expansion_group') return '#38bdf8';
+  if (node.type === 'expansion') return '#22d3ee';
+  if (node.type === 'main') return '#818cf8';
+  return nodeColor(node.connections, node.timesStudied);
 }
 
 // Node sprite size scales with study depth + connections
@@ -87,7 +106,7 @@ function makeGlowSprite(color: string, size: number, mastered: boolean): THREE.S
 
 export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<any>(null);
+  const graphRef = useRef<ForceGraphInstance | null>(null);
   const [dims, setDims] = useState({ w: 800, h: 600 });
 
   useEffect(() => {
@@ -128,7 +147,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
   const nodeThreeObject = useCallback((node: GlobeNode) => {
     const mastered = node.timesStudied >= 3 || node.connections >= 4;
     return makeGlowSprite(
-      nodeColor(node.connections, node.timesStudied),
+      typedNodeColor(node),
       spriteSize(node.connections, node.timesStudied),
       mastered,
     );
@@ -188,6 +207,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
         nodeLabel={(node: GlobeNode) =>
           `<div style="font-family:system-ui;background:#0f172a;border:1px solid #334155;color:#f1f5f9;padding:10px 14px;border-radius:10px;font-size:12px;max-width:220px;box-shadow:0 4px 24px #0008">
             <strong style="color:#e2e8f0;font-size:13px">${node.topic}</strong><br/>
+            ${node.type ? `${node.type}<br/>` : ''}
             <span style="color:#94a3b8">${node.connections} connection${node.connections !== 1 ? 's' : ''} &middot; studied ${node.timesStudied}&times;</span>
           </div>`
         }
@@ -203,7 +223,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
         linkDirectionalParticleWidth={linkParticleWidth}
         linkDirectionalParticleColor={linkParticleColor}
         linkLabel={(link: KnowledgeEdge) =>
-          `<div style="font-family:system-ui;background:#0f172a;border:1px solid #334155;color:#94a3b8;padding:8px 12px;border-radius:8px;font-size:11px;max-width:260px;line-height:1.5">${link.bridge}</div>`
+          `<div style="font-family:system-ui;background:#0f172a;border:1px solid #334155;color:#94a3b8;padding:8px 12px;border-radius:8px;font-size:11px;max-width:260px;line-height:1.5">${link.label ? `<strong style="color:#e2e8f0">${link.label}</strong><br/>` : ''}${link.bridge}</div>`
         }
         onNodeClick={onNodeClick}
         onNodeHover={(node: GlobeNode | null) => {
