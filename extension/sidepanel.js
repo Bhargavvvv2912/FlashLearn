@@ -1,4 +1,4 @@
-const APP_URL = 'https://flash-learn-smoky.vercel.app/';
+const APP_URL = 'https://flash-learn-three.vercel.app/';
 const ORIGIN = APP_URL.replace(/\/$/, ''); // event.origin never has a trailing slash
 const frame = document.getElementById('flashlearn-frame');
 
