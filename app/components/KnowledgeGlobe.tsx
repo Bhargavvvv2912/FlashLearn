@@ -31,6 +31,15 @@ function nodeColor(connections: number, timesStudied: number): string {
   return '#22d3ee';                                    // new       → cyan
 }
 
+function typedNodeColor(node: GlobeNode): string {
+  if (node.type === 'review') return '#14b8a6';
+  if (node.type === 'review_group') return '#0f766e';
+  if (node.type === 'expansion_group') return '#38bdf8';
+  if (node.type === 'expansion') return '#22d3ee';
+  if (node.type === 'main') return '#818cf8';
+  return nodeColor(node.connections, node.timesStudied);
+}
+
 /** Creates a glowing canvas sprite for a node */
 function makeGlowSprite(color: string): THREE.Sprite {
   const size = 128;
@@ -90,7 +99,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
   };
 
   const nodeThreeObject = useCallback((node: GlobeNode) => {
-    return makeGlowSprite(nodeColor(node.connections, node.timesStudied));
+    return makeGlowSprite(typedNodeColor(node));
   }, []);
 
   const linkColor = useCallback((link: KnowledgeEdge) => {
@@ -111,6 +120,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
         nodeLabel={(node: GlobeNode) =>
           `<div style="font-family:system-ui;background:#1e293b;color:#f1f5f9;padding:8px 12px;border-radius:8px;font-size:12px;max-width:200px">
             <strong>${node.topic}</strong><br/>
+            ${node.type ? `${node.type}<br/>` : ''}
             ${node.connections} connection${node.connections !== 1 ? 's' : ''} · studied ${node.timesStudied}×
           </div>`
         }
@@ -120,7 +130,7 @@ export default function KnowledgeGlobe({ nodes, edges, onNodeClick }: Props) {
         linkWidth={linkWidth}
         linkOpacity={0.7}
         linkLabel={(link: KnowledgeEdge) =>
-          `<div style="font-family:system-ui;background:#1e293b;color:#94a3b8;padding:6px 10px;border-radius:6px;font-size:11px;max-width:240px">${link.bridge}</div>`
+          `<div style="font-family:system-ui;background:#1e293b;color:#94a3b8;padding:6px 10px;border-radius:6px;font-size:11px;max-width:240px">${link.label ? `<strong style="color:#e2e8f0">${link.label}</strong><br/>` : ''}${link.bridge}</div>`
         }
         onNodeClick={onNodeClick}
         onNodeHover={(node: GlobeNode | null) => {
