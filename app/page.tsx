@@ -5,7 +5,7 @@ import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
   Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink,
-  Globe, Brain, Trash2, Mic, MicOff, Shield, BookOpen, Network
+  Globe, Brain, Trash2, Mic, MicOff, Shield, BookOpen, Network, Volume2, VolumeX
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
@@ -143,6 +143,10 @@ export default function Home() {
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
 
+  // text-to-speech
+  const [isReading, setIsReading] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
   // HAI transparency panel
   const [showHAIPanel, setShowHAIPanel] = useState(false);
 
@@ -168,6 +172,14 @@ export default function Home() {
   useEffect(() => {
     setKnowledgeGraph(loadGraph());
   }, []);
+
+  // Cancel TTS when card or view changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+    }
+  }, [index, view]);
 
   // Keyboard shortcuts for card navigation
   useEffect(() => {
@@ -209,28 +221,70 @@ export default function Home() {
   const getActivePersona = () => (useCustomPersona ? customPersona : persona);
   const CARD_COUNT = data?.cards?.length ?? 7;
 
-  const handleVoiceInput = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      return;
-    }
+  const startRecognition = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
-      setError('Voice input requires Chrome or Edge. Please try a supported browser.');
+      setError('Voice input requires Chrome or Edge.');
       return;
     }
     const recognition = new SR();
     recognitionRef.current = recognition;
     recognition.lang = 'en-US';
     recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setChatInput(transcript);
+      setChatInput(event.results[0][0].transcript);
     };
-    recognition.onerror = () => setIsListening(false);
+    recognition.onerror = (event: any) => {
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setError('Microphone blocked. Click the lock icon in your browser address bar and allow microphone for this site, then try again.');
+      } else if (event.error !== 'no-speech') {
+        setError(`Voice error: ${event.error}`);
+      }
+    };
     recognition.start();
+  };
+
+  const handleVoiceInput = () => {
+    if (isListening) { recognitionRef.current?.stop(); return; }
+    // Pre-warm mic permission so Chrome shows the permission dialog if needed
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => startRecognition())
+        .catch(() => setError('Microphone access denied. Allow microphone access in your browser for this site, then try again.'));
+    } else {
+      startRecognition();
+    }
+  };
+
+  const handleReadAloud = () => {
+    if (!currentCard || typeof window === 'undefined' || !window.speechSynthesis) return;
+    if (isReading || window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+      return;
+    }
+    const cardText = [
+      `Card ${index + 1}: ${asText(currentCard.title)}.`,
+      asText(currentCard.hook),
+      view === 'simpler' ? asText(currentCard.simpler) :
+      view === 'detailed' ? asText(currentCard.detailed) :
+      view === 'visual' ? 'Visual diagram available on screen.' :
+      asText(currentCard.content),
+    ].filter(Boolean).join(' ');
+
+    const utterance = new SpeechSynthesisUtterance(cardText);
+    utteranceRef.current = utterance;
+    utterance.rate = 0.9;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    utterance.onstart = () => setIsReading(true);
+    utterance.onend = () => setIsReading(false);
+    utterance.onerror = () => setIsReading(false);
+    window.speechSynthesis.speak(utterance);
   };
 
   const currentCard = data?.cards?.[index] || null;
@@ -1621,6 +1675,17 @@ export default function Home() {
                       className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
                     >
                       <BrainCircuit className="w-3 h-3" /> Drill Deeper
+                    </button>
+                    <button
+                      onClick={handleReadAloud}
+                      aria-label={isReading ? 'Stop reading aloud' : 'Read card aloud'}
+                      title={isReading ? 'Stop' : 'Listen to this card'}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors ${
+                        isReading ? 'text-emerald-600 animate-pulse' : 'text-slate-400 hover:text-emerald-500'
+                      }`}
+                    >
+                      {isReading ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                      {isReading ? 'Stop' : 'Listen'}
                     </button>
                     <div className="ml-auto">
                       <button
