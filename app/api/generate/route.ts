@@ -410,7 +410,7 @@ Task: Break down "${topic}" into 7 cards.
 
 STRICT CONSTRAINTS:
 - "hook": One sentence — why this topic is fascinating or surprising. Must spark curiosity.
-- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations here. Start with something concrete or surprising.
+- "content": Write as if explaining to a curious friend, NOT a textbook. 4 to 5 sentences max. No equations here. Start with something concrete or surprising.
 - "simpler": One punchy, clear analogy (max 2 sentences).
 - "detailed": Maximum 5 lines of technical explanation. Bullet points. Equations welcome.
 - "visual": ASCII diagram, table, or short code snippet (max 6 lines).
