@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       mistakes         // for remediation action
     } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
     // ── REFINE ACTIONS ─────────────────────────────────────────────────────────
     if (action === 'drill' || action === 'simplify' || action === 'example') {
