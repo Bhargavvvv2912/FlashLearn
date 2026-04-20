@@ -25,16 +25,37 @@ function extractJsonArray(text: string) {
   return cleaned.substring(start, end);
 }
 
+function escapeControlCharsInStrings(text: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  const escMap: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f' };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { result += c; escaped = false; continue; }
+    if (c === '\\' && inString) { result += c; escaped = true; continue; }
+    if (c === '"') { inString = !inString; result += c; continue; }
+    if (inString && c.charCodeAt(0) < 0x20) {
+      result += escMap[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    result += c;
+  }
+  return result;
+}
+
 function safeJsonParse(jsonText: string) {
   const cleaned = jsonText.trim();
   try {
     return JSON.parse(cleaned);
   } catch (firstError) {
     try {
-      const sanitized = cleaned
-        .replace(/[\u201C\u201D]/g, '"')
-        .replace(/[\u2018\u2019]/g, "'")
-        .replace(/,\s*([}\]])/g, '$1');
+      const sanitized = escapeControlCharsInStrings(
+        cleaned
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/,\s*([}\]])/g, '$1')
+      );
       return JSON.parse(sanitized);
     } catch {
       throw firstError;
@@ -47,6 +68,15 @@ type ExpansionMiniCard = {
   title: string;
   content: string;
 };
+
+const expansionActions = ['simplify', 'example', 'drill', 'reexplain'] as const;
+
+function isExpansionAction(value: unknown): value is ExpansionAction {
+  return (
+    typeof value === 'string' &&
+    (expansionActions as readonly string[]).includes(value)
+  );
+}
 
 type QuestionAnswerCard = {
   title: string;
@@ -172,16 +202,17 @@ export async function POST(req: Request) {
       mistakes         // for remediation action
     } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
     if (action === 'expand') {
-      const allowedActions: ExpansionAction[] = ['simplify', 'example', 'drill', 'reexplain'];
-      if (!allowedActions.includes(expansionAction)) {
+      const requestedExpansionAction: unknown = expansionAction;
+      if (!isExpansionAction(requestedExpansionAction)) {
         return NextResponse.json(
           { error: 'Invalid expansion action' },
           { status: 400, headers: corsHeaders }
         );
       }
+      const typedExpansionAction: ExpansionAction = requestedExpansionAction;
 
       const actionInstructions: Record<ExpansionAction, string> = {
         simplify:
@@ -204,8 +235,8 @@ Rules:
 - Keep each mini-card focused: title under 8 words, content 2-4 concise sentences or short markdown bullets.
 - Match the learner profile and avoid adding unsupported claims.
 
-Selected action: ${expansionAction}
-Task: ${actionInstructions[expansionAction]}
+Selected action: ${typedExpansionAction}
+Task: ${actionInstructions[typedExpansionAction]}
 
 Learner: ${about || 'General learner'}
 Persona: ${persona || 'Student'}
@@ -569,7 +600,7 @@ Task: Break down "${topic}" into 7 cards.
 
 STRICT CONSTRAINTS:
 - "hook": One sentence — why this topic is fascinating or surprising. Must spark curiosity.
-- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations here. Start with something concrete or surprising.
+- "content": Write as if explaining to a curious friend, NOT a textbook. 4 to 5 sentences max. No equations here. Start with something concrete or surprising.
 - "simpler": One punchy, clear analogy (max 2 sentences).
 - "detailed": Maximum 5 lines of technical explanation. Bullet points. Equations welcome.
 - "visual": ASCII diagram, table, or short code snippet (max 6 lines).
@@ -593,10 +624,11 @@ IMPORTANT: Escape backslashes properly. Return ONLY valid JSON.
     const parsed = safeJsonParse(extractJsonObject(result.response.text()));
     return NextResponse.json(parsed, { headers: corsHeaders });
 
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("Gemini API Error:", e);
+    const message = e instanceof Error ? e.message : "Failed to generate content";
     return NextResponse.json(
-      { error: e.message || "Failed to generate content" },
+      { error: message },
       { status: 500, headers: corsHeaders }
     );
   }

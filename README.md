@@ -50,8 +50,16 @@ The result: users learn the same topic with significantly fewer words consumed.
 - Highlight text on any webpage → generate a learning path instantly
 - Persona settings persist across multiple selections on the same page
 
+### Quiz + Review (Adaptive Learning)
 
-text
+After the learning cards, users can take a short quiz to test their understanding.
+
+- Generates multiple-choice questions based on the content
+- Provides immediate feedback with explanations
+- Automatically adds review cards for missed concepts
+- Keeps the quiz anchored to the final card for a smooth flow
+
+**Flow:** Learn → Quiz → Feedback → Review
 
 ---
 
