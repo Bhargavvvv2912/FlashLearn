@@ -25,16 +25,37 @@ function extractJsonArray(text: string) {
   return cleaned.substring(start, end);
 }
 
+function escapeControlCharsInStrings(text: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  const escMap: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f' };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { result += c; escaped = false; continue; }
+    if (c === '\\' && inString) { result += c; escaped = true; continue; }
+    if (c === '"') { inString = !inString; result += c; continue; }
+    if (inString && c.charCodeAt(0) < 0x20) {
+      result += escMap[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    result += c;
+  }
+  return result;
+}
+
 function safeJsonParse(jsonText: string) {
   const cleaned = jsonText.trim();
   try {
     return JSON.parse(cleaned);
   } catch (firstError) {
     try {
-      const sanitized = cleaned
-        .replace(/[\u201C\u201D]/g, '"')
-        .replace(/[\u2018\u2019]/g, "'")
-        .replace(/,\s*([}\]])/g, '$1');
+      const sanitized = escapeControlCharsInStrings(
+        cleaned
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/,\s*([}\]])/g, '$1')
+      );
       return JSON.parse(sanitized);
     } catch {
       throw firstError;

@@ -662,7 +662,7 @@ export default function Home() {
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">FlashLearn</h1>
             </div>
             <p className="text-xl text-slate-600 max-w-lg mx-auto leading-relaxed">
-              Learn anything, your way — AI-powered flashcards that adapt to <em>how you think</em>
+              Learn anything, your way: AI-powered flashcards that adapt to <em>how you think</em>
             </p>
             <p className="text-xs font-black uppercase tracking-widest text-indigo-500">
               Built for Human-AI Interaction · University of Michigan
@@ -690,9 +690,9 @@ export default function Home() {
           <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-left flex gap-3 items-start">
             <Shield className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
             <div>
-              <p className="text-sm font-black text-indigo-800">Human in the Loop — Always</p>
+              <p className="text-sm font-black text-indigo-800">Human in the Loop: Always</p>
               <p className="text-xs text-indigo-600 mt-0.5 leading-relaxed">
-                FlashLearn never generates silently. You choose the persona, difficulty, and context before every explanation. The AI follows your lead — not the other way around.
+                FlashLearn never generates silently. You choose the persona, difficulty, and context before every explanation. The AI follows your lead, not the other way around.
               </p>
             </div>
           </div>
@@ -702,7 +702,7 @@ export default function Home() {
             <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
             <p className="text-xs text-slate-500 leading-relaxed">
               <span className="font-black text-slate-700">Chrome Extension available.</span>{' '}
-              Highlight any text on any webpage and generate flashcards from that source — with Back-to-Source linking.
+              Highlight any text on any webpage and generate flashcards from that source, with Back-to-Source linking.
             </p>
           </div>
 
@@ -736,7 +736,7 @@ export default function Home() {
               </h1>
             </div>
             <p className="text-slate-500 text-sm">
-              Understand any topic — without the information overload
+              Understand any topic, without the information overload
             </p>
           </div>
 
@@ -814,7 +814,7 @@ export default function Home() {
             <Shield className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs font-black text-indigo-700 uppercase tracking-widest">
-                AI Mode — {useCustomPersona ? (customPersona || 'Custom') : persona} · {difficulty}
+                AI Mode: {useCustomPersona ? (customPersona || 'Custom') : persona} · {difficulty}
               </p>
               <p className="text-[10px] text-indigo-500 mt-0.5">
                 {showHAIPanel ? 'Hide' : 'See'} how the AI will explain this topic to you →
@@ -822,7 +822,7 @@ export default function Home() {
               {showHAIPanel && (
                 <div className="mt-2 space-y-1.5 text-[11px] text-indigo-700">
                   <p><span className="font-black">Persona:</span> {useCustomPersona ? (customPersona || 'Not set') : persona}</p>
-                  <p><span className="font-black">Difficulty:</span> {difficulty} — AI calibrates vocabulary and depth to this level</p>
+                  <p><span className="font-black">Difficulty:</span> {difficulty}: AI calibrates vocabulary and depth to this level</p>
                   {about && <p><span className="font-black">Your background:</span> {about.slice(0, 120)}{about.length > 120 ? '…' : ''}</p>}
                   <p className="text-indigo-400 pt-1 border-t border-indigo-100">
                     The AI only uses the persona and settings <em>you</em> choose. You can change them anytime before generating.
@@ -1884,7 +1884,7 @@ export default function Home() {
                     <div key={label} className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
                       <span className="text-slate-300 text-xs font-bold">{label}</span>
-                      <span className="text-slate-500 text-[10px]">— {desc}</span>
+                      <span className="text-slate-500 text-[10px]">: {desc}</span>
                     </div>
                   ))}
                 </div>
@@ -1912,7 +1912,7 @@ export default function Home() {
                         const other = knowledgeGraph.nodes.find((n) => n.id === otherId);
                         return (
                           <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
-                            <span className="text-indigo-400 font-bold">{other?.topic}</span> — {e.bridge}
+                            <span className="text-indigo-400 font-bold">{other?.topic}</span>: {e.bridge}
                           </div>
                         );
                       })}
