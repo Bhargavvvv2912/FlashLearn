@@ -1,0 +1,450 @@
+{
+  "metadata": {
+    "timestamp": "20260420_210607",
+    "model": "gemini-2.5-flash-lite",
+    "flashlearn_api": "http://localhost:3000/api/generate",
+    "topics_requested": 5,
+    "topics_succeeded": 2,
+    "ttft_estimate_s": 0.8,
+    "avg_reading_wpm": 200,
+    "fast_reading_wpm": 250,
+    "scenarios": {
+      "full": "All card layers — as currently generated and shown in the app",
+      "core": "Essential explanation only — drop analogy, technical depth, and visual",
+      "content_only": "Bare concept text — minimum viable card"
+    },
+    "methodology": {
+      "baseline": "Gemini textbook-mode prompt — same model, format is the independent variable",
+      "token_counting": "Gemini count_tokens API (output tokens for fairness)",
+      "latency_model": "Measured for baseline and full FL; estimated for core/content via TTFT(0.8s)+linear token scaling",
+      "readability": "Flesch-Kincaid (1975), rule-based syllable counter (Young 1989)",
+      "lexical_diversity": "Type-Token Ratio = unique_words / total_words",
+      "info_fidelity": "LLM-as-judge: 10-concept recall + 0-100 retention score (evaluated on Full scenario only)",
+      "concept_coverage": "Weighted recall: COVERED=1.0, PARTIAL=0.5, MISSING=0.0"
+    }
+  },
+  "results": [
+    {
+      "topic": "Transformer attention mechanism in deep learning",
+      "baseline": {
+        "text": "The Transformer attention mechanism is a groundbreaking neural network architecture that has revolutionized natural language processing and is increasingly making inroads into other domains like computer vision. At its heart, attention allows a model to dynamically weigh the importance of different parts of the input sequence when processing a particular element of that sequence. Unlike traditional recurrent neural networks (RNNs) which process information sequentially, maintaining a fixed-size hidden state that can struggle with long-range dependencies, attention enables the model to \"look back\" at the entire input and selectively focus on the most relevant pieces of information at each step. This selective focus is crucial for tasks where understanding the context and relationships between words or tokens, often across significant distances, is paramount.\n\nThe core principle behind the attention mechanism is the idea of learning relevance scores. For each element in the output being generated (or processed), the model calculates a set of scores that indicate how much attention it should pay to each element in the input sequence. These scores are typically computed through a learned similarity function between the current element and all elements in the input. The Transformer architecture specifically employs a \"scaled dot-product attention\" mechanism. This involves three main components: Queries (Q), Keys (K), and Values (V). Imagine you have a question (Query) and a set of documents (Keys) indexed by their content. You want to find the most relevant documents to answer your question. The Query vector represents what you're looking for. The Key vectors represent the content of each item you might search within. A similarity score is calculated between the Query and each Key. These scores are then normalized, often using a softmax function, to obtain attention weights – probabilities that sum to one. Finally, these weights are used to take a weighted sum of the Value vectors, where each Value vector represents the actual information associated with a Key. The result is a contextually enriched representation that prioritizes information aligned with the Query.\n\nWithin the Transformer, attention is implemented in several key ways. \"Self-attention\" is a fundamental concept where Query, Key, and Value vectors are all derived from the same input sequence. This allows each element in the sequence to attend to all other elements, enabling the model to capture intra-sequence relationships. For example, in the sentence \"The animal didn't cross the street because it was too tired,\" self-attention can help the model understand that \"it\" refers to \"the animal.\" \"Multi-head attention\" enhances this by running the attention mechanism multiple times in parallel with different learned linear projections of Q, K, and V. This allows the model to attend to different aspects of the relationships simultaneously, enriching its understanding. For instance, one head might focus on grammatical relationships, while another focuses on semantic similarity. Beyond self-attention, Transformers also utilize \"encoder-decoder attention\" in sequence-to-sequence tasks like machine translation. Here, the Queries come from the decoder's current state, while Keys and Values come from the encoder's output. This allows the decoder to attend to the most relevant parts of the source sentence while generating the target sentence.\n\nThe practical impact of the Transformer attention mechanism is vast. It forms the backbone of state-of-the-art models like BERT, GPT-3, and T5, which excel at a wide range of natural language understanding and generation tasks including machine translation, text summarization, question answering, and even creative writing. Consider machine translation from English to French. When translating the sentence \"The cat sat on the mat,\" and the model is about to generate the French word for \"mat\" (tapis), the attention mechanism would allow it to assign high attention weights to the English word \"mat\" in the input sentence, ensuring an accurate translation. In question answering, if asked \"Who discovered penicillin?\", an attention mechanism would highlight \"Alexander Fleming\" in a passage discussing the discovery of penicillin. Furthermore, attention has been adapted for computer vision, enabling models to focus on salient regions of an image for tasks like image captioning or object detection.\n\nLet's illustrate with a simplified worked example. Suppose our input sentence is \"I love natural language processing.\" We want to understand the context for the word \"processing.\" Using self-attention, we would derive Query, Key, and Value vectors for each word. For the Query of \"processing,\" we would compute similarity scores with the Keys of all words: \"I,\" \"love,\" \"natural,\" \"language,\" and \"processing\" itself. Let's say the dot-product similarity scores (before normalization) are: \"I\": 0.2, \"love\": 0.5, \"natural\": 0.9, \"language\": 1.1, \"processing\": 1.5. After applying a softmax function, these scores become attention weights, perhaps something like: \"I\": 0.05, \"love\": 0.1, \"natural\": 0.2, \"language\": 0.3, \"processing\": 0.35. These weights indicate that \"processing\" is most strongly related to itself, followed by \"language\" and \"natural.\" Finally, we would compute a weighted sum of the Value vectors from each word using these attention weights. This resulting vector for \"processing\" would be a richer representation, incorporating the semantic context provided by \"language\" and \"natural.\" This process is repeated for every word in the sequence, allowing the model to build a nuanced understanding of the entire input.",
+        "input_tokens": 116,
+        "output_tokens": 1113,
+        "total_tokens": 1229,
+        "word_count": 841,
+        "sentence_count": 55,
+        "avg_sentence_length": 15.29,
+        "reading_time_200wpm": 4.21,
+        "reading_time_250wpm": 3.36,
+        "flesch_reading_ease": 43.24,
+        "flesch_grade_level": 11.03,
+        "lexical_diversity_ttr": 0.3972,
+        "latency_s": 5.536
+      },
+      "scenarios": {
+        "full": {
+          "scenario": "full",
+          "label": "Full (all fields)",
+          "description": "All card layers — as currently generated and shown in the app",
+          "fields_included": [
+            "title",
+            "hook",
+            "content",
+            "simpler",
+            "detailed",
+            "visual"
+          ],
+          "text": "The Magic of Focusing\nImagine trying to understand a long sentence, but your brain can instantly highlight the most important words to grasp the meaning. That's essentially what attention does for computers!\nInstead of reading word-by-word and trying to remember everything, attention lets a model 'look back' at the entire input and decide which pieces are most relevant to the current task. Think of it like a smart highlighter that dynamically picks out what matters most, making sense of complex information much more effectively.\nIt's like when you're reading a book and your eyes naturally jump back to a key phrase to understand a new plot point, instead of rereading the whole chapter.\nAttention calculates a weighted sum of input representations, where weights are determined by the relevance of each input element to the current element being processed.\n* It creates 'scores' between an element and all other elements.\n* These scores are normalized into probabilities (weights).\n* A weighted sum of input vectors is computed based on these weights.\nInput: [W1, W2, W3, W4]\nCurrent focus: W3\nScores: [0.1, 0.7, 0.2]\nWeighted Sum: 0.1*W1 + 0.7*W2 + 0.2*W3\n\nQueries, Keys, and Values\nWhat if a computer could ask questions, provide reference points, and retrieve information all at once to understand context? That's the power of Query, Key, and Value in attention!\nFor each piece of information, attention generates three distinct vectors: a 'Query' (what we're looking for), a 'Key' (what this piece of information represents), and a 'Value' (the actual information itself). By comparing the Query with all Keys, the model finds the most relevant pieces (Values) to focus on.\nIt's like searching for a song (Query) in a music library. Each song title is a Key, and the song itself is the Value.\nEach input embedding is transformed into three vectors: Q (Query), K (Key), and V (Value).\n* Q represents what the current element is 'looking for'.\n* K represents what each element 'offers' or its identity.\n* V represents the actual content of each element.\nScores are computed by dot-producting Q with all K's.\nInput Embedding X:\nX * W_Q = Q\nX * W_K = K\nX * W_V = V\n(Where W_Q, W_K, W_V are learned weight matrices)\n\nSelf-Attention: Looking Inward\nWhat if a sentence could understand its own internal relationships, like how 'it' refers back to 'the cat' without needing external context? Self-attention makes this possible!\nInstead of comparing an input to an external source, self-attention compares each element within the input sequence to every other element in the *same* sequence. This allows the model to understand dependencies and relationships between words, even if they are far apart, leading to much richer contextual understanding.\nIt's like a group of friends discussing a topic. Each friend listens to what everyone else is saying to form their own opinion, rather than just listening to one leader.\nSelf-attention calculates attention weights for each element based on its relationship with *all* other elements in the same sequence.\n* This allows direct modeling of dependencies between all pairs of positions.\n* It's the core mechanism in Transformers for understanding sentence structure and meaning.\nExample: 'The animal didn't cross the street because it was too tired.'\nSelf-attention helps 'it' strongly attend to 'animal'.\n\nMulti-Head Attention: More Angles\nWhy settle for looking at something from just one perspective when you can examine it from multiple viewpoints simultaneously? Multi-head attention does exactly that for deep learning models!\nInstead of performing attention just once, multi-head attention runs the attention mechanism multiple times in parallel, each with different learned linear projections for Queries, Keys, and Values. This allows the model to jointly attend to information from different representation subspaces at different positions, capturing a richer variety of relationships.\nIt's like having multiple people with different expertise (e.g., a historian, a scientist, an artist) all look at the same painting to get a more complete understanding.\nMultiple 'attention heads' are run in parallel.\n* Each head has its own Q, K, V weight matrices.\n* This allows the model to learn different types of relationships simultaneously.\n* The outputs from all heads are concatenated and linearly transformed.\nHead 1: (Q1, K1, V1) -> Output1\nHead 2: (Q2, K2, V2) -> Output2\n... Concatenate & Project -> Final Output\n\nPositional Encoding: Where Things Are\nIf attention lets us focus on *what* is important, how do we tell the model *where* it is in the sequence? Positional encoding solves this puzzle!\nSince the attention mechanism itself doesn't inherently know the order of words (it treats input as a set), we need to inject information about position. Positional encodings are vectors added to the input embeddings that tell the model the 'rank' or position of each element in the sequence, allowing it to leverage word order.\nIt's like adding page numbers to a book. Even if you shuffle the pages, the numbers tell you the correct order.\nVectors are added to the input embeddings to represent their position.\n* Typically uses sine and cosine functions of different frequencies.\n* This allows the model to learn relative positions.\nInput Embedding + Positional Encoding = Input for Attention\nE.g., E_i + P_i = Final Input_i\n\nApplications Beyond Text\nWe often think of attention for language, but what if it could help robots 'see' and understand their surroundings, or even predict protein structures? Attention is a universal tool!\nWhile groundbreaking for Natural Language Processing, attention's ability to weigh importance across sequences is incredibly versatile. It's now used in computer vision for image captioning and object detection, in recommendation systems, and even in bioinformatics for tasks like protein folding and drug discovery, proving its broad applicability.\nIt's like a chef using their senses (sight, smell, taste) to decide which ingredients to combine, not just following a recipe rigidly.\nAttention mechanisms are adapted for various data modalities beyond text:\n* **Images:** Focusing on relevant pixels or regions.\n* **Audio:** Identifying crucial sound segments.\n* **Graphs:** Understanding relationships between nodes.\nImage Captioning:\nInput: Image pixels\nOutput: Text description\nAttention helps focus on 'dog' when generating 'a dog playing fetch'.\n\nThe Transformer Architecture\nWhat happens when you combine this powerful attention mechanism with other clever tricks to build an entire intelligent system? You get the Transformer, a game-changer for AI!\nThe Transformer architecture is built around stacks of self-attention and feed-forward neural networks. It replaces traditional recurrent (RNNs) and convolutional (CNNs) layers, allowing for massive parallelization and superior performance on sequential data. This has led to huge leaps in areas like machine translation and language modeling.\nIt's like building a super-efficient factory. Instead of one slow assembly line (RNN), you have many parallel stations (attention heads) working together.\nThe Transformer consists of an encoder and a decoder, both heavily utilizing multi-head self-attention.\n* **Encoder:** Processes input sequence.\n* **Decoder:** Generates output sequence.\n* Feed-forward networks process outputs from attention layers.\nEncoder Block:\nInput -> Multi-Head Attention -> Add & Norm -> Feed Forward -> Add & Norm -> Output\n(Repeated N times)",
+          "output_tokens": 1628,
+          "word_count": 1168,
+          "sentence_count": 81,
+          "avg_sentence_length": 14.42,
+          "reading_time_200wpm": 5.84,
+          "reading_time_250wpm": 4.67,
+          "flesch_reading_ease": 53.28,
+          "flesch_grade_level": 9.41,
+          "lexical_diversity_ttr": 0.406,
+          "estimated_latency_s": 15.724,
+          "vs_baseline": {
+            "token_reduction_pct": -46.3,
+            "token_compression_ratio": 1.4627,
+            "word_reduction_pct": -38.9,
+            "rt_saved_pct": -38.7,
+            "rt_saved_min": -1.63,
+            "readability_gain_pts": 10.04,
+            "grade_level_reduction": 1.62,
+            "latency_saved_s": -10.188
+          },
+          "vs_full": {},
+          "concept_coverage_pct": 80.0,
+          "information_retention_score": 70,
+          "coverage_breakdown": {
+            "covered": 7,
+            "partial": 2,
+            "missing": 1,
+            "total": 10
+          },
+          "missing_key_info": [
+            "The specific calculation method of scaled dot-product attention.",
+            "The role of the softmax function in normalizing scores into attention weights.",
+            "The existence and purpose of encoder-decoder attention for sequence-to-sequence tasks."
+          ],
+          "information_loss_summary": "The flashcards cover the core concepts of attention, QKV, self-attention, and multi-head attention but miss crucial details like the specific calculation methods (scaled dot-product), the use of softmax for normalization, the overcoming of RNN limitations, and the distinct encoder-decoder attention mechanism."
+        },
+        "core": {
+          "scenario": "core",
+          "label": "Core (hook + content)",
+          "description": "Essential explanation only — drop analogy, technical depth, and visual",
+          "fields_included": [
+            "title",
+            "hook",
+            "content"
+          ],
+          "text": "The Magic of Focusing\nImagine trying to understand a long sentence, but your brain can instantly highlight the most important words to grasp the meaning. That's essentially what attention does for computers!\nInstead of reading word-by-word and trying to remember everything, attention lets a model 'look back' at the entire input and decide which pieces are most relevant to the current task. Think of it like a smart highlighter that dynamically picks out what matters most, making sense of complex information much more effectively.\n\nQueries, Keys, and Values\nWhat if a computer could ask questions, provide reference points, and retrieve information all at once to understand context? That's the power of Query, Key, and Value in attention!\nFor each piece of information, attention generates three distinct vectors: a 'Query' (what we're looking for), a 'Key' (what this piece of information represents), and a 'Value' (the actual information itself). By comparing the Query with all Keys, the model finds the most relevant pieces (Values) to focus on.\n\nSelf-Attention: Looking Inward\nWhat if a sentence could understand its own internal relationships, like how 'it' refers back to 'the cat' without needing external context? Self-attention makes this possible!\nInstead of comparing an input to an external source, self-attention compares each element within the input sequence to every other element in the *same* sequence. This allows the model to understand dependencies and relationships between words, even if they are far apart, leading to much richer contextual understanding.\n\nMulti-Head Attention: More Angles\nWhy settle for looking at something from just one perspective when you can examine it from multiple viewpoints simultaneously? Multi-head attention does exactly that for deep learning models!\nInstead of performing attention just once, multi-head attention runs the attention mechanism multiple times in parallel, each with different learned linear projections for Queries, Keys, and Values. This allows the model to jointly attend to information from different representation subspaces at different positions, capturing a richer variety of relationships.\n\nPositional Encoding: Where Things Are\nIf attention lets us focus on *what* is important, how do we tell the model *where* it is in the sequence? Positional encoding solves this puzzle!\nSince the attention mechanism itself doesn't inherently know the order of words (it treats input as a set), we need to inject information about position. Positional encodings are vectors added to the input embeddings that tell the model the 'rank' or position of each element in the sequence, allowing it to leverage word order.\n\nApplications Beyond Text\nWe often think of attention for language, but what if it could help robots 'see' and understand their surroundings, or even predict protein structures? Attention is a universal tool!\nWhile groundbreaking for Natural Language Processing, attention's ability to weigh importance across sequences is incredibly versatile. It's now used in computer vision for image captioning and object detection, in recommendation systems, and even in bioinformatics for tasks like protein folding and drug discovery, proving its broad applicability.\n\nThe Transformer Architecture\nWhat happens when you combine this powerful attention mechanism with other clever tricks to build an entire intelligent system? You get the Transformer, a game-changer for AI!\nThe Transformer architecture is built around stacks of self-attention and feed-forward neural networks. It replaces traditional recurrent (RNNs) and convolutional (CNNs) layers, allowing for massive parallelization and superior performance on sequential data. This has led to huge leaps in areas like machine translation and language modeling.",
+          "output_tokens": 725,
+          "word_count": 564,
+          "sentence_count": 29,
+          "avg_sentence_length": 19.45,
+          "reading_time_200wpm": 2.82,
+          "reading_time_250wpm": 2.26,
+          "flesch_reading_ease": 36.94,
+          "flesch_grade_level": 12.94,
+          "lexical_diversity_ttr": 0.4991,
+          "estimated_latency_s": 7.446,
+          "vs_baseline": {
+            "token_reduction_pct": 34.9,
+            "token_compression_ratio": 0.6514,
+            "word_reduction_pct": 32.9,
+            "rt_saved_pct": 33.0,
+            "rt_saved_min": 1.39,
+            "readability_gain_pts": -6.3,
+            "grade_level_reduction": -1.91,
+            "latency_saved_s": -1.91
+          },
+          "vs_full": {
+            "token_reduction_pct": 55.5,
+            "word_reduction_pct": 51.7,
+            "latency_saved_s": 8.278,
+            "rt_saved_pct": 51.7
+          }
+        },
+        "content_only": {
+          "scenario": "content_only",
+          "label": "Content only",
+          "description": "Bare concept text — minimum viable card",
+          "fields_included": [
+            "content"
+          ],
+          "text": "Instead of reading word-by-word and trying to remember everything, attention lets a model 'look back' at the entire input and decide which pieces are most relevant to the current task. Think of it like a smart highlighter that dynamically picks out what matters most, making sense of complex information much more effectively.\n\nFor each piece of information, attention generates three distinct vectors: a 'Query' (what we're looking for), a 'Key' (what this piece of information represents), and a 'Value' (the actual information itself). By comparing the Query with all Keys, the model finds the most relevant pieces (Values) to focus on.\n\nInstead of comparing an input to an external source, self-attention compares each element within the input sequence to every other element in the *same* sequence. This allows the model to understand dependencies and relationships between words, even if they are far apart, leading to much richer contextual understanding.\n\nInstead of performing attention just once, multi-head attention runs the attention mechanism multiple times in parallel, each with different learned linear projections for Queries, Keys, and Values. This allows the model to jointly attend to information from different representation subspaces at different positions, capturing a richer variety of relationships.\n\nSince the attention mechanism itself doesn't inherently know the order of words (it treats input as a set), we need to inject information about position. Positional encodings are vectors added to the input embeddings that tell the model the 'rank' or position of each element in the sequence, allowing it to leverage word order.\n\nWhile groundbreaking for Natural Language Processing, attention's ability to weigh importance across sequences is incredibly versatile. It's now used in computer vision for image captioning and object detection, in recommendation systems, and even in bioinformatics for tasks like protein folding and drug discovery, proving its broad applicability.\n\nThe Transformer architecture is built around stacks of self-attention and feed-forward neural networks. It replaces traditional recurrent (RNNs) and convolutional (CNNs) layers, allowing for massive parallelization and superior performance on sequential data. This has led to huge leaps in areas like machine translation and language modeling.",
+          "output_tokens": 436,
+          "word_count": 345,
+          "sentence_count": 15,
+          "avg_sentence_length": 23.0,
+          "reading_time_200wpm": 1.73,
+          "reading_time_250wpm": 1.38,
+          "flesch_reading_ease": 29.25,
+          "flesch_grade_level": 14.89,
+          "lexical_diversity_ttr": 0.5831,
+          "estimated_latency_s": 4.797,
+          "vs_baseline": {
+            "token_reduction_pct": 60.8,
+            "token_compression_ratio": 0.3917,
+            "word_reduction_pct": 59.0,
+            "rt_saved_pct": 58.9,
+            "rt_saved_min": 2.48,
+            "readability_gain_pts": -13.99,
+            "grade_level_reduction": -3.86,
+            "latency_saved_s": 0.739
+          },
+          "vs_full": {
+            "token_reduction_pct": 73.2,
+            "word_reduction_pct": 70.5,
+            "latency_saved_s": 10.927,
+            "rt_saved_pct": 70.4
+          }
+        }
+      },
+      "judge": {
+        "concepts": [
+          {
+            "concept": "Attention allows dynamic weighing of input importance for each output element.",
+            "status": "COVERED",
+            "note": "Explained as a smart highlighter and dynamically picking out what matters."
+          },
+          {
+            "concept": "Attention overcomes RNN limitations with long-range dependencies.",
+            "status": "PARTIAL",
+            "note": "Mentioned indirectly by contrasting with word-by-word processing but not explicitly referencing RNNs or long-range dependencies."
+          },
+          {
+            "concept": "Attention calculates relevance scores between current elements and input elements.",
+            "status": "COVERED",
+            "note": "Described as creating 'scores' between elements to determine relevance."
+          },
+          {
+            "concept": "Scores are normalized using softmax to obtain attention weights.",
+            "status": "PARTIAL",
+            "note": "States scores are normalized into probabilities (weights) but doesn't mention softmax specifically."
+          },
+          {
+            "concept": "Attention uses a weighted sum of Value vectors based on attention weights.",
+            "status": "COVERED",
+            "note": "Clearly described as a weighted sum of input vectors based on weights."
+          },
+          {
+            "concept": "Transformer uses scaled dot-product attention with Queries, Keys, and Values.",
+            "status": "PARTIAL",
+            "note": "Introduces Q, K, V but doesn't specify 'scaled dot-product' or the exact calculation method beyond dot-producting Q with K."
+          },
+          {
+            "concept": "Self-attention derives Q, K, V from the same input sequence.",
+            "status": "COVERED",
+            "note": "Explained as comparing elements within the same sequence."
+          },
+          {
+            "concept": "Self-attention enables capturing intra-sequence relationships (e.g., pronoun resolution).",
+            "status": "COVERED",
+            "note": "Provided an example showing 'it' attending to 'animal'."
+          },
+          {
+            "concept": "Multi-head attention uses parallel attention mechanisms with different Q, K, V projections.",
+            "status": "COVERED",
+            "note": "Explains running attention multiple times in parallel with different learned projections."
+          },
+          {
+            "concept": "Encoder-decoder attention is used in sequence-to-sequence tasks (e.g., machine translation).",
+            "status": "MISSING",
+            "note": "This type of attention is not mentioned in the flashcards."
+          }
+        ],
+        "covered": 7,
+        "partial": 2,
+        "missing": 1,
+        "information_retention": 70,
+        "information_loss_summary": "The flashcards cover the core concepts of attention, QKV, self-attention, and multi-head attention but miss crucial details like the specific calculation methods (scaled dot-product), the use of softmax for normalization, the overcoming of RNN limitations, and the distinct encoder-decoder attention mechanism.",
+        "missing_key_info": [
+          "The specific calculation method of scaled dot-product attention.",
+          "The role of the softmax function in normalizing scores into attention weights.",
+          "The existence and purpose of encoder-decoder attention for sequence-to-sequence tasks."
+        ]
+      }
+    },
+    {
+      "topic": "Gradient descent and backpropagation",
+      "baseline": {
+        "text": "Gradient descent and backpropagation are foundational algorithms in machine learning, particularly for training artificial neural networks. At their heart, both are about optimization, specifically finding the set of parameters (weights and biases) for a model that minimize a given cost or loss function. This cost function quantifies how poorly the model is performing on its training data; a lower cost means a better-performing model. The core mechanism is iterative improvement: we start with some initial parameters, evaluate the cost, and then adjust the parameters in a direction that reduces the cost.\n\nThe underlying principle guiding this adjustment is the gradient. Imagine the cost function as a landscape with hills and valleys, where the height of the land represents the cost. We want to find the lowest point in this landscape. The gradient, in this context, is a vector that points in the direction of the steepest ascent. Therefore, to descend, we move in the *opposite* direction of the gradient. Gradient descent is the algorithm that repeatedly calculates this gradient and takes a small step in the negative gradient direction. The size of this step is controlled by a parameter called the learning rate, which is crucial for effective training; too large a learning rate can cause us to overshoot the minimum, while too small a learning rate can lead to agonizingly slow convergence.\n\nBackpropagation is the specific and highly efficient method used to calculate the gradient of the cost function with respect to all the parameters in a neural network. Neural networks are complex, with many layers and millions of parameters. Directly calculating the gradient for each parameter can be computationally prohibitive. Backpropagation leverages the chain rule of calculus to systematically compute these gradients. It works by first performing a forward pass, where input data is fed through the network to produce an output and calculate the cost. Then, it performs a backward pass, starting from the output layer and moving back towards the input layer. During this backward pass, the error (the difference between the predicted and actual output) is propagated back through the network, layer by layer, and the gradient of the cost function with respect to each weight and bias is computed using the chain rule at each step. This computed gradient is then used by the gradient descent algorithm to update the parameters.\n\nThese algorithms are indispensable in a vast array of real-world applications. They power the image recognition systems that identify objects in photographs, the natural language processing models that translate languages and power chatbots like myself, and the recommendation engines that suggest products or content to users. For example, consider training a neural network to classify images of cats and dogs. The network will have many layers of interconnected \"neurons,\" each with associated weights and biases. During training, the network is shown thousands of images, and for each image, it predicts whether it's a cat or a dog. The difference between the prediction and the actual label (the cost) is calculated. Backpropagation efficiently computes how much each weight and bias contributed to this error. Gradient descent then uses these computed gradients to slightly adjust the weights and biases, making the network more likely to correctly classify the next image it sees. This iterative process, repeated over many images and many times, gradually tunes the network to become highly accurate.\n\nLet's consider a simplified, conceptual worked example. Imagine a very basic linear model trying to predict a value $y$ from an input $x$, represented as $y = wx + b$. Our cost function could be the mean squared error: $C = \\frac{1}{2}(y_{actual} - y_{predicted})^2 = \\frac{1}{2}(y_{actual} - (wx + b))^2$. We want to find the optimal values for $w$ (weight) and $b$ (bias) that minimize $C$.\n\nFirst, we initialize $w$ and $b$ randomly, say $w=0.5$ and $b=0.2$. Let's assume we have a single data point: $x=2$ and $y_{actual}=5$.\nThe predicted value is $y_{predicted} = (0.5)(2) + 0.2 = 1.2$.\nThe cost is $C = \\frac{1}{2}(5 - 1.2)^2 = \\frac{1}{2}(3.8)^2 = 7.22$.\n\nNow, we need to calculate the gradients of the cost function with respect to $w$ and $b$. Using the chain rule, we find:\n$\\frac{\\partial C}{\\partial w} = \\frac{\\partial C}{\\partial y_{predicted}} \\frac{\\partial y_{predicted}}{\\partial w} = (y_{predicted} - y_{actual}) \\cdot x = (1.2 - 5) \\cdot 2 = -3.8 \\cdot 2 = -7.6$.\n$\\frac{\\partial C}{\\partial b} = \\frac{\\partial C}{\\partial y_{predicted}} \\frac{\\partial y_{predicted}}{\\partial b} = (y_{predicted} - y_{actual}) \\cdot 1 = (1.2 - 5) \\cdot 1 = -3.8$.\n\nLet's choose a learning rate, say $\\alpha = 0.1$.\nGradient descent updates the parameters:\n$w_{new} = w_{old} - \\alpha \\frac{\\partial C}{\\partial w} = 0.5 - 0.1 (-7.6) = 0.5 + 0.76 = 1.26$.\n$b_{new} = b_{old} - \\alpha \\frac{\\partial C}{\\partial b} = 0.2 - 0.1 (-3.8) = 0.2 + 0.38 = 0.58$.\n\nWith these new parameters, our model is now $y = 1.26x + 0.58$. The predicted value for $x=2$ is now $y_{predicted} = (1.26)(2) + 0.58 = 2.52 + 0.58 = 3.1$. The cost is now $C = \\frac{1}{2}(5 - 3.1)^2 = \\frac{1}{2}(1.9)^2 = 1.805$. We can see the cost has significantly decreased. This process would be repeated many times, with potentially many data points, until $w$ and $b$ converge to values that minimize the cost function for the entire dataset. In more complex neural networks, backpropagation handles the intricate gradient calculations across all layers, enabling gradient descent to effectively optimize millions of parameters.",
+        "input_tokens": 115,
+        "output_tokens": 1380,
+        "total_tokens": 1495,
+        "word_count": 896,
+        "sentence_count": 84,
+        "avg_sentence_length": 10.67,
+        "reading_time_200wpm": 4.48,
+        "reading_time_250wpm": 3.58,
+        "flesch_reading_ease": 70.05,
+        "flesch_grade_level": 6.14,
+        "lexical_diversity_ttr": 0.3655,
+        "latency_s": 6.849
+      },
+      "scenarios": {
+        "full": {
+          "scenario": "full",
+          "label": "Full (all fields)",
+          "description": "All card layers — as currently generated and shown in the app",
+          "fields_included": [
+            "title",
+            "hook",
+            "content",
+            "simpler",
+            "detailed",
+            "visual"
+          ],
+          "text": "The Learning Goal\nImagine teaching a robot to play darts – how do you make it get better without telling it exactly where to throw next?\nMachine learning models, like that dart-throwing robot, need a way to figure out how to perform a task better. They start off guessing, and their guesses aren't very good. The goal is to minimize how 'wrong' these guesses are, making the model more accurate with each attempt.\nIt's like tuning a radio to get the clearest signal. You adjust the dial little by little until the static disappears and the music sounds perfect.\n- The objective is to minimize a 'loss function' (or cost function).\n- This function quantifies how poorly the model is performing.\n- We want to find the model parameters (weights and biases) that result in the lowest possible loss.\n- Think of it as finding the lowest point in a valley.\n_/\n    /  \\\n   /    \\\n  /______\\  <- Target: Minimum Loss\n\nGradient Descent: Taking Steps Downhill\nWhat if you were blindfolded on a mountain and needed to reach the lowest point?\nGradient descent is the strategy we use to find that lowest point for our model's performance. It's like feeling around in the dark for the steepest downward slope and taking a small step in that direction. We repeat this process, taking many small steps, until we hopefully reach the bottom.\nIt's like walking down a hill by always taking a step in the direction that feels steepest downwards.\n- The 'gradient' tells us the direction of the steepest increase.\n- We want to go in the *opposite* direction to decrease the loss.\n- The 'learning rate' controls the size of each step.\n- Formula: \\(\\theta_{new} = \\theta_{old} - \\alpha \\nabla J(\\theta)\\), where \\(\\alpha\\) is the learning rate and \\(\\nabla J(\\theta)\\) is the gradient.\n^ Loss\n  |\n  |    o  <-- Current position\n  |   /|\n  |  / |\n  +-----> Parameters\n     \\ <-- Steepest descent direction\n\nThe Role of the Gradient\nHow can a simple number tell us which way to go to improve?\nThe gradient is essentially a set of directions that tells us how much a small change in each of the model's parameters will affect the overall error. It's like a compass pointing us towards uphill. By looking at this 'slope' for every part of our model, we know precisely how to adjust each piece to reduce errors.\nIt's the model's way of saying, 'If you change *this* setting a little bit, the error will go up by *this much*.'\n- The gradient is a vector of partial derivatives of the loss function with respect to each parameter.\n- It indicates the rate of change of the loss function.\n- A positive gradient means increasing the parameter increases the loss.\n- A negative gradient means increasing the parameter decreases the loss.\nParameter A: +0.5 (increase A decreases loss)\nParameter B: -1.2 (increase B increases loss)\nParameter C: +0.1 (increase C slightly decreases loss)\n\nBackpropagation: Learning from Errors\nWhat if the robot only knew it missed the dartboard, but not *how* it missed?\nBackpropagation is the clever algorithm that allows a neural network to figure out *which* of its internal 'decisions' led to a wrong answer. It works backward from the final error, assigning blame to each layer and neuron. This 'blame' then tells us exactly how to adjust the connections to do better next time.\nIt's like a detective tracing the cause of a mistake all the way back to the source.\n- It's an efficient way to compute the gradient of the loss function for each parameter.\n- It uses the chain rule of calculus to propagate error gradients backward through the network.\n- This allows us to calculate how much each weight and bias contributed to the final error.\n- Error: `output_error` -> `hidden_layer_error` -> `input_layer_error`.\nInput -> Layer 1 -> Layer 2 -> Output (Error)\n        ^------------^------------^  (Backpropagation of error)\n\nThe Chain Rule Connection\nHow can we understand the impact of a tiny decision made way back at the start on the final outcome?\nThe chain rule from calculus is the mathematical engine behind backpropagation. Imagine a series of dominoes; if you nudge the first one, all the subsequent ones fall. The chain rule lets us calculate how much the fall of the last domino is influenced by the initial push on the first, by looking at the effect of each intermediate domino.\nIt's like understanding how a small change in your first ingredient affects the taste of the final dish, through all the cooking steps in between.\n- The chain rule allows us to calculate the derivative of a composite function.\n- In neural networks, each layer's output is a function of the previous layer's output.\n- Backpropagation applies the chain rule repeatedly to find the gradient of the overall loss function with respect to each weight and bias.\n- \\(\\frac{\\partial Loss}{\\partial w} = \\frac{\\partial Loss}{\\partial \\text{output}} \\times \\frac{\\partial \\text{output}}{\\partial \\text{activation}} \\times \\frac{\\partial \\text{activation}}{\\partial w}\\)\nError -> Layer N -> ... -> Layer 2 -> Layer 1 -> Input\n  \\______/\n     Chain Rule Link\n\nPutting It All Together\nHow does a complex AI 'learn' to recognize your face or predict the weather?\nGradient descent and backpropagation work in tandem like a seasoned teacher and a diligent student. The model makes a prediction (student's answer), backpropagation figures out exactly where the student went wrong (teacher identifies errors), and gradient descent guides the model to adjust its internal settings to avoid those mistakes next time (teacher advises on how to improve).\nIt's a continuous feedback loop: guess, check how wrong, adjust to guess better.\n- Forward Pass: Input data goes through the network to produce an output.\n- Loss Calculation: The difference between predicted and actual output is calculated.\n- Backward Pass (Backpropagation): Gradients of the loss with respect to weights/biases are computed.\n- Gradient Descent: Weights/biases are updated using the computed gradients and learning rate.\nInput -> [Model Forward Pass] -> Prediction\nPrediction vs Actual -> [Loss Calculation] -> Error\nError -> [Backpropagation] -> Gradients\nGradients + Learning Rate -> [Gradient Descent] -> Updated Model\n\nChallenges and Nuances\nWhy don't all AI models learn perfectly and instantly?\nWhile powerful, this learning process isn't always smooth. Sometimes, gradient descent can get stuck in 'local minima' (small dips instead of the deepest valley), or take an agonizingly long time to converge. Choosing the right learning rate is like finding the perfect pace – too fast and you overshoot, too slow and you never get there.\nIt's like trying to get to the lowest point in a lumpy mattress; you might get stuck in a small dip and think you're done.\n- Local Minima: The algorithm might converge to a suboptimal solution.\n- Saddle Points: Points where the gradient is zero but not a minimum or maximum.\n- Vanishing/Exploding Gradients: Gradients become too small or too large in deep networks.\n- Learning Rate Selection: Crucial for convergence speed and accuracy.\n/\n  /---\n /     \\  <- Local Minimum\n/_______\n\n     \\    / \n      \\--/   <- Saddle Point\n       \\/",
+          "output_tokens": 1635,
+          "word_count": 1174,
+          "sentence_count": 67,
+          "avg_sentence_length": 17.52,
+          "reading_time_200wpm": 5.87,
+          "reading_time_250wpm": 4.7,
+          "flesch_reading_ease": 66.91,
+          "flesch_grade_level": 8.28,
+          "lexical_diversity_ttr": 0.3599,
+          "estimated_latency_s": 8.011,
+          "vs_baseline": {
+            "token_reduction_pct": -18.5,
+            "token_compression_ratio": 1.1848,
+            "word_reduction_pct": -31.0,
+            "rt_saved_pct": -31.0,
+            "rt_saved_min": -1.39,
+            "readability_gain_pts": -3.14,
+            "grade_level_reduction": -2.14,
+            "latency_saved_s": -1.162
+          },
+          "vs_full": {},
+          "concept_coverage_pct": 80.0,
+          "information_retention_score": 70,
+          "coverage_breakdown": {
+            "covered": 7,
+            "partial": 2,
+            "missing": 1,
+            "total": 10
+          },
+          "missing_key_info": [
+            "The explicit description of the forward pass in backpropagation and its role in calculating the initial cost.",
+            "The detailed explanation of the learning rate's impact on convergence (overshooting vs. slow convergence).",
+            "The conceptual example of a linear model ($y=wx+b$) and its mean squared error cost function to illustrate gradient calculation."
+          ],
+          "information_loss_summary": "The flashcards cover the core ideas of gradient descent and backpropagation but omit crucial details about the forward pass in backpropagation and the nuanced impact of the learning rate."
+        },
+        "core": {
+          "scenario": "core",
+          "label": "Core (hook + content)",
+          "description": "Essential explanation only — drop analogy, technical depth, and visual",
+          "fields_included": [
+            "title",
+            "hook",
+            "content"
+          ],
+          "text": "The Learning Goal\nImagine teaching a robot to play darts – how do you make it get better without telling it exactly where to throw next?\nMachine learning models, like that dart-throwing robot, need a way to figure out how to perform a task better. They start off guessing, and their guesses aren't very good. The goal is to minimize how 'wrong' these guesses are, making the model more accurate with each attempt.\n\nGradient Descent: Taking Steps Downhill\nWhat if you were blindfolded on a mountain and needed to reach the lowest point?\nGradient descent is the strategy we use to find that lowest point for our model's performance. It's like feeling around in the dark for the steepest downward slope and taking a small step in that direction. We repeat this process, taking many small steps, until we hopefully reach the bottom.\n\nThe Role of the Gradient\nHow can a simple number tell us which way to go to improve?\nThe gradient is essentially a set of directions that tells us how much a small change in each of the model's parameters will affect the overall error. It's like a compass pointing us towards uphill. By looking at this 'slope' for every part of our model, we know precisely how to adjust each piece to reduce errors.\n\nBackpropagation: Learning from Errors\nWhat if the robot only knew it missed the dartboard, but not *how* it missed?\nBackpropagation is the clever algorithm that allows a neural network to figure out *which* of its internal 'decisions' led to a wrong answer. It works backward from the final error, assigning blame to each layer and neuron. This 'blame' then tells us exactly how to adjust the connections to do better next time.\n\nThe Chain Rule Connection\nHow can we understand the impact of a tiny decision made way back at the start on the final outcome?\nThe chain rule from calculus is the mathematical engine behind backpropagation. Imagine a series of dominoes; if you nudge the first one, all the subsequent ones fall. The chain rule lets us calculate how much the fall of the last domino is influenced by the initial push on the first, by looking at the effect of each intermediate domino.\n\nPutting It All Together\nHow does a complex AI 'learn' to recognize your face or predict the weather?\nGradient descent and backpropagation work in tandem like a seasoned teacher and a diligent student. The model makes a prediction (student's answer), backpropagation figures out exactly where the student went wrong (teacher identifies errors), and gradient descent guides the model to adjust its internal settings to avoid those mistakes next time (teacher advises on how to improve).\n\nChallenges and Nuances\nWhy don't all AI models learn perfectly and instantly?\nWhile powerful, this learning process isn't always smooth. Sometimes, gradient descent can get stuck in 'local minima' (small dips instead of the deepest valley), or take an agonizingly long time to converge. Choosing the right learning rate is like finding the perfect pace – too fast and you overshoot, too slow and you never get there.",
+          "output_tokens": 634,
+          "word_count": 516,
+          "sentence_count": 27,
+          "avg_sentence_length": 19.11,
+          "reading_time_200wpm": 2.58,
+          "reading_time_250wpm": 2.06,
+          "flesch_reading_ease": 61.03,
+          "flesch_grade_level": 9.49,
+          "lexical_diversity_ttr": 0.4952,
+          "estimated_latency_s": 3.596,
+          "vs_baseline": {
+            "token_reduction_pct": 54.1,
+            "token_compression_ratio": 0.4594,
+            "word_reduction_pct": 42.4,
+            "rt_saved_pct": 42.4,
+            "rt_saved_min": 1.9,
+            "readability_gain_pts": -9.02,
+            "grade_level_reduction": -3.35,
+            "latency_saved_s": 3.253
+          },
+          "vs_full": {
+            "token_reduction_pct": 61.2,
+            "word_reduction_pct": 56.0,
+            "latency_saved_s": 4.415,
+            "rt_saved_pct": 56.0
+          }
+        },
+        "content_only": {
+          "scenario": "content_only",
+          "label": "Content only",
+          "description": "Bare concept text — minimum viable card",
+          "fields_included": [
+            "content"
+          ],
+          "text": "Machine learning models, like that dart-throwing robot, need a way to figure out how to perform a task better. They start off guessing, and their guesses aren't very good. The goal is to minimize how 'wrong' these guesses are, making the model more accurate with each attempt.\n\nGradient descent is the strategy we use to find that lowest point for our model's performance. It's like feeling around in the dark for the steepest downward slope and taking a small step in that direction. We repeat this process, taking many small steps, until we hopefully reach the bottom.\n\nThe gradient is essentially a set of directions that tells us how much a small change in each of the model's parameters will affect the overall error. It's like a compass pointing us towards uphill. By looking at this 'slope' for every part of our model, we know precisely how to adjust each piece to reduce errors.\n\nBackpropagation is the clever algorithm that allows a neural network to figure out *which* of its internal 'decisions' led to a wrong answer. It works backward from the final error, assigning blame to each layer and neuron. This 'blame' then tells us exactly how to adjust the connections to do better next time.\n\nThe chain rule from calculus is the mathematical engine behind backpropagation. Imagine a series of dominoes; if you nudge the first one, all the subsequent ones fall. The chain rule lets us calculate how much the fall of the last domino is influenced by the initial push on the first, by looking at the effect of each intermediate domino.\n\nGradient descent and backpropagation work in tandem like a seasoned teacher and a diligent student. The model makes a prediction (student's answer), backpropagation figures out exactly where the student went wrong (teacher identifies errors), and gradient descent guides the model to adjust its internal settings to avoid those mistakes next time (teacher advises on how to improve).\n\nWhile powerful, this learning process isn't always smooth. Sometimes, gradient descent can get stuck in 'local minima' (small dips instead of the deepest valley), or take an agonizingly long time to converge. Choosing the right learning rate is like finding the perfect pace – too fast and you overshoot, too slow and you never get there.",
+          "output_tokens": 462,
+          "word_count": 379,
+          "sentence_count": 20,
+          "avg_sentence_length": 18.95,
+          "reading_time_200wpm": 1.9,
+          "reading_time_250wpm": 1.52,
+          "flesch_reading_ease": 58.36,
+          "flesch_grade_level": 9.83,
+          "lexical_diversity_ttr": 0.544,
+          "estimated_latency_s": 2.838,
+          "vs_baseline": {
+            "token_reduction_pct": 66.5,
+            "token_compression_ratio": 0.3348,
+            "word_reduction_pct": 57.7,
+            "rt_saved_pct": 57.6,
+            "rt_saved_min": 2.58,
+            "readability_gain_pts": -11.69,
+            "grade_level_reduction": -3.69,
+            "latency_saved_s": 4.011
+          },
+          "vs_full": {
+            "token_reduction_pct": 71.7,
+            "word_reduction_pct": 67.7,
+            "latency_saved_s": 5.173,
+            "rt_saved_pct": 67.6
+          }
+        }
+      },
+      "judge": {
+        "concepts": [
+          {
+            "concept": "Gradient descent and backpropagation are foundational for training artificial neural networks.",
+            "status": "COVERED",
+            "note": "Implied by the explanations of both algorithms and their connection to model improvement."
+          },
+          {
+            "concept": "Both algorithms aim to find model parameters (weights and biases) that minimize a cost/loss function.",
+            "status": "COVERED",
+            "note": "Explicitly stated in the 'The Learning Goal' and 'Gradient Descent' cards."
+          },
+          {
+            "concept": "The cost function quantifies model performance, with lower cost indicating better performance.",
+            "status": "COVERED",
+            "note": "Stated in 'The Learning Goal' card."
+          },
+          {
+            "concept": "Gradient descent iteratively adjusts parameters in the direction opposite to the gradient to reduce cost.",
+            "status": "COVERED",
+            "note": "Clearly explained in the 'Gradient Descent: Taking Steps Downhill' card."
+          },
+          {
+            "concept": "The learning rate controls the step size in gradient descent, impacting convergence speed and stability.",
+            "status": "PARTIAL",
+            "note": "The learning rate is mentioned as controlling step size, but its critical impact on convergence (overshooting/slow convergence) is omitted."
+          },
+          {
+            "concept": "Backpropagation is a method to efficiently calculate the gradient of the cost function with respect to all parameters in a neural network.",
+            "status": "COVERED",
+            "note": "Stated in the 'Backpropagation: Learning from Errors' card."
+          },
+          {
+            "concept": "Backpropagation uses the chain rule of calculus to compute gradients systematically by propagating error backward through the network.",
+            "status": "PARTIAL",
+            "note": "The chain rule is mentioned as the mechanism, but its role in systematic computation and propagating error gradients backward is only partially detailed."
+          },
+          {
+            "concept": "Backpropagation involves a forward pass to compute output and cost, followed by a backward pass to compute gradients.",
+            "status": "MISSING",
+            "note": "The explicit mention of a forward pass and its purpose is absent."
+          },
+          {
+            "concept": "Gradient descent uses the computed gradients from backpropagation to update parameters.",
+            "status": "COVERED",
+            "note": "The connection is implied by the description of both algorithms and their roles in improving a model."
+          },
+          {
+            "concept": "The gradient points in the direction of steepest ascent, so descent is in the opposite direction.",
+            "status": "COVERED",
+            "note": "Clearly stated in 'Gradient Descent: Taking Steps Downhill' and 'The Role of the Gradient' cards."
+          }
+        ],
+        "covered": 7,
+        "partial": 2,
+        "missing": 1,
+        "information_retention": 70,
+        "information_loss_summary": "The flashcards cover the core ideas of gradient descent and backpropagation but omit crucial details about the forward pass in backpropagation and the nuanced impact of the learning rate.",
+        "missing_key_info": [
+          "The explicit description of the forward pass in backpropagation and its role in calculating the initial cost.",
+          "The detailed explanation of the learning rate's impact on convergence (overshooting vs. slow convergence).",
+          "The conceptual example of a linear model ($y=wx+b$) and its mean squared error cost function to illustrate gradient calculation."
+        ]
+      }
+    },
+    {
+      "topic": "CAP theorem in distributed systems",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:3000/api/generate"
+    },
+    {
+      "topic": "CRISPR-Cas9 gene editing mechanism",
+      "error": "429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash-lite\nPlease retry in 51.833833511s. [links {\n  description: \"Learn more about Gemini API quotas\"\n  url: \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n}\n, violations {\n  quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\"\n  quota_id: \"GenerateRequestsPerDayPerProjectPerModel-FreeTier\"\n  quota_dimensions {\n    key: \"model\"\n    value: \"gemini-2.5-flash-lite\"\n  }\n  quota_dimensions {\n    key: \"location\"\n    value: \"global\"\n  }\n  quota_value: 20\n}\n, retry_delay {\n  seconds: 51\n}\n]"
+    },
+    {
+      "topic": "Game theory and Nash equilibrium",
+      "error": "429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash-lite\nPlease retry in 51.773186355s. [links {\n  description: \"Learn more about Gemini API quotas\"\n  url: \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n}\n, violations {\n  quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\"\n  quota_id: \"GenerateRequestsPerDayPerProjectPerModel-FreeTier\"\n  quota_dimensions {\n    key: \"model\"\n    value: \"gemini-2.5-flash-lite\"\n  }\n  quota_dimensions {\n    key: \"location\"\n    value: \"global\"\n  }\n  quota_value: 20\n}\n, retry_delay {\n  seconds: 51\n}\n]"
+    }
+  ]
+}
