@@ -13,7 +13,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {
   loadGraph, upsertNode, mergeEdges, clearGraph,
-  getTopConnectedNodes, getIsolatedNodes,
+  getTopConnectedNodes, getIsolatedNodes, getTopicGraph,
   type KnowledgeGraph,
 } from './lib/knowledgeGraph';
 import type { GlobeNode } from './components/KnowledgeGlobe';
@@ -68,7 +68,11 @@ const PERSONA_CHIPS = [
 ];
 
 export default function Home() {
-  const [topic, setTopic] = useState('');
+  const [topic, setTopic] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    const selected = new URLSearchParams(window.location.search).get('selectedText');
+    return selected ? selected.slice(0, 300) : '';
+  });
   const [about, setAbout] = useState(() => {
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('flashlearn_about') || '';
@@ -119,7 +123,7 @@ export default function Home() {
   const [pageContent, setPageContent] = useState('');
 
   // v2: knowledge graph & memory
-  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>({ nodes: [], edges: [] });
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>(() => loadGraph());
   const [useMemory, setUseMemory] = useState(false);
   const [globeSelectedNode, setGlobeSelectedNode] = useState<GlobeNode | null>(null);
   const [connectionsFound, setConnectionsFound] = useState(0);
@@ -142,20 +146,6 @@ export default function Home() {
     localStorage.setItem('flashlearn_context', context);
   }, [about, persona, customPersona, difficulty, context]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const selected = params.get('selectedText');
-    if (selected && !topic) {
-      setTopic(selected.slice(0, 300));
-    }
-  }, [topic]);
-
-  // Load knowledge graph from localStorage on mount
-  useEffect(() => {
-    setKnowledgeGraph(loadGraph());
-  }, []);
-
   // Receive page context from the extension side panel via postMessage
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -176,7 +166,7 @@ export default function Home() {
   const asText = (value: unknown) =>
     Array.isArray(value) ? value.join('\n') : String(value ?? '');
 
-  const ErrorBanner = () =>
+  const errorBanner =
     error ? (
       <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
@@ -199,9 +189,10 @@ export default function Home() {
     setError(null);
     try {
       // Build memory context from top connected nodes if memory mode is on
+      const currentTopicGraph = getTopicGraph(knowledgeGraph);
       const memoryContext =
-        useMemory && knowledgeGraph.nodes.length > 0
-          ? getTopConnectedNodes(knowledgeGraph, 5).map((n) => ({
+        useMemory && currentTopicGraph.nodes.length > 0
+          ? getTopConnectedNodes(currentTopicGraph, 5).map((n) => ({
               topic: n.topic,
               summary: n.summary,
               connections: n.connCount,
@@ -257,7 +248,8 @@ export default function Home() {
         setKnowledgeGraph({ ...updatedGraph });
 
         // Fire-and-forget: find connections to existing topics
-        const otherNodes = updatedGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
+        const updatedTopicGraph = getTopicGraph(updatedGraph);
+        const otherNodes = updatedTopicGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
         if (otherNodes.length > 0) {
           fetch('/api/generate', {
             method: 'POST',
@@ -593,7 +585,7 @@ export default function Home() {
             </p>
           </div>
 
-          <ErrorBanner />
+          {errorBanner}
 
           <div>
             <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">
@@ -800,6 +792,8 @@ export default function Home() {
   quizAnchorIndex !== null
     ? index === quizAnchorIndex
     : index === CARD_COUNT - 1;
+  const topicUniverseGraph = getTopicGraph(knowledgeGraph);
+  const isolatedTopicNodes = getIsolatedNodes(topicUniverseGraph);
 
 
   // MAIN APP VIEW
@@ -884,7 +878,7 @@ export default function Home() {
           </div>
         </div>
 
-        <ErrorBanner />
+        {errorBanner}
 
         {/* TREE MODE */}
         {viewMode === 'tree' && (
@@ -1604,7 +1598,7 @@ export default function Home() {
           <div className="fixed inset-0 z-50 bg-slate-900 flex">
             {/* 3D Globe */}
             <div className="flex-1 overflow-hidden">
-              {knowledgeGraph.nodes.length === 0 ? (
+              {topicUniverseGraph.nodes.length === 0 ? (
                 <div className="w-full h-full flex flex-col items-center justify-center text-center p-8 space-y-4">
                   <Globe className="w-16 h-16 text-slate-600" />
                   <p className="text-slate-400 font-bold text-lg">Your Knowledge Universe is Empty</p>
@@ -1620,8 +1614,8 @@ export default function Home() {
                 </div>
               ) : (
                 <KnowledgeGlobe
-                  nodes={knowledgeGraph.nodes}
-                  edges={knowledgeGraph.edges}
+                  nodes={topicUniverseGraph.nodes}
+                  edges={topicUniverseGraph.edges}
                   onNodeClick={(node) => setGlobeSelectedNode(node)}
                 />
               )}
@@ -1638,7 +1632,7 @@ export default function Home() {
                 </button>
                 <h2 className="text-white font-black text-base">Knowledge Universe</h2>
                 <p className="text-slate-400 text-xs mt-1">
-                  {knowledgeGraph.nodes.length} topics · {knowledgeGraph.edges.length} connections
+                  {topicUniverseGraph.nodes.length} topics · {topicUniverseGraph.edges.length} connections
                 </p>
               </div>
 
@@ -1675,12 +1669,12 @@ export default function Home() {
                       </span>
                     </div>
                     {/* Show edges from this node */}
-                    {knowledgeGraph.edges
+                    {topicUniverseGraph.edges
                       .filter((e) => e.source === globeSelectedNode.id || e.target === globeSelectedNode.id)
                       .slice(0, 3)
                       .map((e, i) => {
                         const otherId = e.source === globeSelectedNode.id ? e.target : e.source;
-                        const other = knowledgeGraph.nodes.find((n) => n.id === otherId);
+                        const other = topicUniverseGraph.nodes.find((n) => n.id === otherId);
                         return (
                           <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
                             <span className="text-indigo-400 font-bold">{other?.topic}</span> — {e.bridge}
@@ -1691,15 +1685,15 @@ export default function Home() {
                 )}
 
                 {/* Strongest connections */}
-                {knowledgeGraph.edges.length > 0 && (
+                {topicUniverseGraph.edges.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Strongest Connections</p>
-                    {[...knowledgeGraph.edges]
+                    {[...topicUniverseGraph.edges]
                       .sort((a, b) => b.weight - a.weight)
                       .slice(0, 4)
                       .map((e, i) => {
-                        const src = knowledgeGraph.nodes.find((n) => n.id === e.source);
-                        const tgt = knowledgeGraph.nodes.find((n) => n.id === e.target);
+                        const src = topicUniverseGraph.nodes.find((n) => n.id === e.source);
+                        const tgt = topicUniverseGraph.nodes.find((n) => n.id === e.target);
                         return (
                           <div key={i} className="bg-slate-700/60 rounded-xl p-3 space-y-1">
                             <div className="flex items-center gap-1.5">
@@ -1719,11 +1713,11 @@ export default function Home() {
                 )}
 
                 {/* Knowledge gaps */}
-                {getIsolatedNodes(knowledgeGraph).length > 0 && (
+                {isolatedTopicNodes.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Knowledge Gaps</p>
                     <p className="text-slate-500 text-[10px]">These topics have no connections yet. Try learning something related.</p>
-                    {getIsolatedNodes(knowledgeGraph).map((n) => (
+                    {isolatedTopicNodes.map((n) => (
                       <div key={n.id} className="flex items-center gap-2 px-3 py-2 bg-slate-700/40 rounded-xl">
                         <div className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
                         <span className="text-slate-300 text-xs font-bold truncate">{n.topic}</span>

@@ -4,6 +4,7 @@ export interface KnowledgeNode {
   summary: string;
   studiedAt: number;
   timesStudied: number;
+  type?: "main" | "expansion_group" | "expansion" | "review_group" | "review";
 }
 
 export interface KnowledgeEdge {
@@ -11,6 +12,7 @@ export interface KnowledgeEdge {
   target: string;
   weight: number; // 0–1
   bridge: string; // one-sentence description of the connection
+  relation?: "simplify" | "drill_deeper" | "example" | "reexplain" | "review" | "main";
 }
 
 export interface KnowledgeGraph {
@@ -45,6 +47,23 @@ export function topicToId(topic: string): string {
     .slice(0, 60);
 }
 
+export function isTopicNode(node: KnowledgeNode): boolean {
+  return !node.type;
+}
+
+export function getTopicGraph(graph: KnowledgeGraph): KnowledgeGraph {
+  const nodes = graph.nodes.filter(isTopicNode);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges.filter(
+    (edge) =>
+      !edge.relation &&
+      nodeIds.has(edge.source) &&
+      nodeIds.has(edge.target),
+  );
+
+  return { nodes, edges };
+}
+
 export function upsertNode(
   topic: string,
   summary: string
@@ -69,10 +88,16 @@ export function mergeEdges(
   connections: Array<{ existingTopic: string; strength: number; bridge: string }>
 ): KnowledgeGraph {
   const graph = loadGraph();
+  const topicGraph = getTopicGraph(graph);
+  const topicIds = new Set(topicGraph.nodes.map((node) => node.id));
 
   for (const conn of connections) {
+    if (!conn || typeof conn.existingTopic !== 'string') continue;
+    if (typeof conn.strength !== 'number' || conn.strength < 7) continue;
+    if (typeof conn.bridge !== 'string' || conn.bridge.trim().length < 20) continue;
+
     const targetId = topicToId(conn.existingTopic);
-    if (!graph.nodes.find((n) => n.id === targetId)) continue;
+    if (!topicIds.has(sourceId) || !topicIds.has(targetId)) continue;
     if (sourceId === targetId) continue;
 
     const w = Math.min(Math.max(conn.strength / 10, 0), 1);
