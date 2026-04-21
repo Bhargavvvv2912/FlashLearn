@@ -86,8 +86,15 @@ export function upsertNode(
   const existing = graph.nodes.find((n) => n.id === id);
 
   if (existing) {
+    existing.topic = topic;
+    existing.summary = summary;
     existing.timesStudied += 1;
     existing.studiedAt = Date.now();
+    delete existing.type;
+    delete existing.relation;
+    delete existing.parentId;
+    delete existing.reviewGroupId;
+    delete existing.cardIndex;
   } else {
     graph.nodes.push({ id, topic, summary, studiedAt: Date.now(), timesStudied: 1 });
   }
@@ -111,6 +118,13 @@ export function upsertGraphNode(
       studiedAt: node.studiedAt ?? existing.studiedAt,
       timesStudied: Math.max(existing.timesStudied, node.timesStudied ?? 1),
     });
+    if (!node.type && !node.relation) {
+      delete existing.type;
+      delete existing.relation;
+      delete existing.parentId;
+      delete existing.reviewGroupId;
+      delete existing.cardIndex;
+    }
   } else {
     graph.nodes.push({
       ...node,
