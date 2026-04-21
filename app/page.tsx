@@ -14,7 +14,7 @@ import 'katex/dist/katex.min.css';
 import {
   loadGraph, upsertNode, mergeEdges, clearGraph, topicToId,
   upsertGraphNode, upsertGraphEdge,
-  getTopConnectedNodes, getIsolatedNodes,
+  getTopConnectedNodes, getIsolatedNodes, getTopicGraph,
   type KnowledgeGraph, type KnowledgeRelation,
 } from './lib/knowledgeGraph';
 import type { GlobeNode } from './components/KnowledgeGlobe';
@@ -184,19 +184,10 @@ export default function Home() {
   const [showConnectionsToast, setShowConnectionsToast] = useState(false);
   const [currentTopicNodeId, setCurrentTopicNodeId] = useState<string | null>(null);
 
-  const topicUniverseGraph = useMemo<KnowledgeGraph>(() => {
-    const topicNodes = knowledgeGraph.nodes.filter((node) => !node.type);
-    const topicNodeIds = new Set(topicNodes.map((node) => node.id));
-    return {
-      nodes: topicNodes,
-      edges: knowledgeGraph.edges.filter(
-        (edge) =>
-          !edge.relation &&
-          topicNodeIds.has(edge.source) &&
-          topicNodeIds.has(edge.target),
-      ),
-    };
-  }, [knowledgeGraph]);
+  const topicUniverseGraph = useMemo<KnowledgeGraph>(
+    () => getTopicGraph(knowledgeGraph),
+    [knowledgeGraph],
+  );
   const isolatedTopicNodes = useMemo(
     () => getIsolatedNodes(topicUniverseGraph),
     [topicUniverseGraph],
@@ -591,9 +582,10 @@ export default function Home() {
     setError(null);
     try {
       // Build memory context from top connected nodes if memory mode is on
+      const currentTopicGraph = getTopicGraph(knowledgeGraph);
       const memoryContext =
-        useMemory && topicUniverseGraph.nodes.length > 0
-          ? getTopConnectedNodes(topicUniverseGraph, 5).map((n) => ({
+        useMemory && currentTopicGraph.nodes.length > 0
+          ? getTopConnectedNodes(currentTopicGraph, 5).map((n) => ({
               topic: n.topic,
               summary: n.summary,
               connections: n.connCount,
@@ -656,7 +648,8 @@ export default function Home() {
         persistMainCardNodes(result.cards || [], nodeId, kgTopicName, result.topic_summary || topic);
 
         // Fire-and-forget: find connections to existing topics
-        const otherNodes = updatedGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
+        const updatedTopicGraph = getTopicGraph(updatedGraph);
+        const otherNodes = updatedTopicGraph.nodes.filter((n) => n.id !== nodeId).slice(0, 15);
         if (otherNodes.length > 0) {
           fetch('/api/generate', {
             method: 'POST',

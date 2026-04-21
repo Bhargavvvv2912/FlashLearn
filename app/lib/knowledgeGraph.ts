@@ -60,6 +60,23 @@ export function topicToId(topic: string): string {
     .slice(0, 60);
 }
 
+export function isTopicNode(node: KnowledgeNode): boolean {
+  return !node.type;
+}
+
+export function getTopicGraph(graph: KnowledgeGraph): KnowledgeGraph {
+  const nodes = graph.nodes.filter(isTopicNode);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges.filter(
+    (edge) =>
+      !edge.relation &&
+      nodeIds.has(edge.source) &&
+      nodeIds.has(edge.target),
+  );
+
+  return { nodes, edges };
+}
+
 export function upsertNode(
   topic: string,
   summary: string
@@ -69,8 +86,15 @@ export function upsertNode(
   const existing = graph.nodes.find((n) => n.id === id);
 
   if (existing) {
+    existing.topic = topic;
+    existing.summary = summary;
     existing.timesStudied += 1;
     existing.studiedAt = Date.now();
+    delete existing.type;
+    delete existing.relation;
+    delete existing.parentId;
+    delete existing.reviewGroupId;
+    delete existing.cardIndex;
   } else {
     graph.nodes.push({ id, topic, summary, studiedAt: Date.now(), timesStudied: 1 });
   }
@@ -94,6 +118,13 @@ export function upsertGraphNode(
       studiedAt: node.studiedAt ?? existing.studiedAt,
       timesStudied: Math.max(existing.timesStudied, node.timesStudied ?? 1),
     });
+    if (!node.type && !node.relation) {
+      delete existing.type;
+      delete existing.relation;
+      delete existing.parentId;
+      delete existing.reviewGroupId;
+      delete existing.cardIndex;
+    }
   } else {
     graph.nodes.push({
       ...node,
@@ -134,10 +165,16 @@ export function mergeEdges(
   connections: Array<{ existingTopic: string; strength: number; bridge: string }>
 ): KnowledgeGraph {
   const graph = loadGraph();
+  const topicGraph = getTopicGraph(graph);
+  const topicIds = new Set(topicGraph.nodes.map((node) => node.id));
 
   for (const conn of connections) {
+    if (!conn || typeof conn.existingTopic !== 'string') continue;
+    if (typeof conn.strength !== 'number' || conn.strength < 7) continue;
+    if (typeof conn.bridge !== 'string' || conn.bridge.trim().length < 20) continue;
+
     const targetId = topicToId(conn.existingTopic);
-    if (!graph.nodes.find((n) => n.id === targetId)) continue;
+    if (!topicIds.has(sourceId) || !topicIds.has(targetId)) continue;
     if (sourceId === targetId) continue;
 
     const w = Math.min(Math.max(conn.strength / 10, 0), 1);

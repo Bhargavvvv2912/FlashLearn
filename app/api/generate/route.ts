@@ -63,6 +63,49 @@ function safeJsonParse(jsonText: string) {
   }
 }
 
+type ExistingTopic = {
+  topic: string;
+  summary: string;
+};
+
+type TopicConnection = {
+  existingTopic: string;
+  strength: number;
+  bridge: string;
+};
+
+function normalizeTopicConnections(
+  parsed: unknown,
+  existingTopics: ExistingTopic[],
+): TopicConnection[] {
+  if (!parsed || typeof parsed !== 'object') return [];
+  const rawConnections = (parsed as { connections?: unknown }).connections;
+  if (!Array.isArray(rawConnections)) return [];
+
+  const existingTopicNames = new Set(existingTopics.map((topic) => topic.topic));
+
+  return rawConnections
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const candidate = item as {
+        existingTopic?: unknown;
+        strength?: unknown;
+        bridge?: unknown;
+      };
+      if (typeof candidate.existingTopic !== 'string') return null;
+      if (!existingTopicNames.has(candidate.existingTopic)) return null;
+      if (typeof candidate.strength !== 'number' || candidate.strength < 7) return null;
+      if (typeof candidate.bridge !== 'string' || candidate.bridge.trim().length < 20) return null;
+      return {
+        existingTopic: candidate.existingTopic,
+        strength: Math.min(Math.max(candidate.strength, 1), 10),
+        bridge: candidate.bridge.trim(),
+      };
+    })
+    .filter((connection): connection is TopicConnection => Boolean(connection))
+    .slice(0, 4);
+}
+
 type ExpansionAction = 'simplify' | 'example' | 'drill' | 'reexplain';
 type ExpansionMiniCard = {
   title: string;
@@ -387,11 +430,33 @@ Return ONLY valid JSON:
 
     // ── FIND CONNECTIONS (Knowledge Graph) ────────────────────────────────────
     if (action === 'find_connections') {
-      if (!existingTopics || existingTopics.length === 0) {
+      const topicCandidates: ExistingTopic[] = Array.isArray(existingTopics)
+        ? existingTopics
+            .map((candidate) => {
+              if (!candidate || typeof candidate !== 'object') return null;
+              const topicCandidate = candidate as {
+                topic?: unknown;
+                summary?: unknown;
+                type?: unknown;
+              };
+              if (topicCandidate.type) return null;
+              if (typeof topicCandidate.topic !== 'string') return null;
+              return {
+                topic: topicCandidate.topic,
+                summary:
+                  typeof topicCandidate.summary === 'string'
+                    ? topicCandidate.summary
+                    : '',
+              };
+            })
+            .filter((candidate): candidate is ExistingTopic => Boolean(candidate))
+        : [];
+
+      if (topicCandidates.length === 0) {
         return NextResponse.json({ connections: [] }, { headers: corsHeaders });
       }
 
-      const topicList = (existingTopics as Array<{ topic: string; summary: string }>)
+      const topicList = topicCandidates
         .map((t, i) => `${i + 1}. ${t.topic} — ${t.summary}`)
         .join('\n');
 
@@ -424,7 +489,10 @@ Return ONLY valid JSON:
 `;
       const result = await model.generateContent(connectionPrompt);
       const parsed = safeJsonParse(extractJsonObject(result.response.text()));
-      return NextResponse.json(parsed, { headers: corsHeaders });
+      return NextResponse.json(
+        { connections: normalizeTopicConnections(parsed, topicCandidates) },
+        { headers: corsHeaders },
+      );
     }
     // ── QUIZ ───────────────────────────────────────────────────────────────────
     if (action === 'quiz') {
