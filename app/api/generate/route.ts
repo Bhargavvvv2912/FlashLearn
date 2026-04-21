@@ -405,15 +405,11 @@ Learner's existing topics:
 ${topicList}
 
 RULES:
-- Only include DEEP intellectual connections: shared mathematical foundations, direct cause-effect relationships, analogous computational or physical structures, overlapping formal methods, or topics that are prerequisite/successor to each other.
-- EXPLICITLY REJECT the following — they are NOT valid connections:
-  • Naming coincidences or shared vocabulary with different meanings
-  • Metaphorical parallels ("both involve networks", "both deal with flow", "both involve agents")
-  • Topics from entirely different domains (e.g., fiction vs. technical protocols, entertainment vs. engineering) unless they share a DIRECT structural or mathematical parallel — not just a vague analogy
-  • Connections justified only by "related fields" or "both are important in tech"
-- Rate connection strength 1–10 based on HOW DIRECTLY the two topics share underlying principles, equations, or mechanisms. Be conservative.
-- Only return connections with strength ≥ 6. Return an empty array if no strong connections exist — that is the correct answer when topics are truly unrelated.
-- "bridge" must name the SPECIFIC shared principle, equation, structure, or mechanism. Vague bridges like "both involve communication" or "both use graphs" are INVALID and must not be returned.
+- Include connections where topics share underlying principles, prerequisites, overlapping concepts, or related domains.
+- Rate connection strength 1–10. A score of 5 means "meaningfully related", 8–10 means "deeply intertwined".
+- Only return connections with strength ≥ 3. Return an empty array only if topics are genuinely from completely unrelated domains.
+- "bridge" should briefly explain the shared concept or relationship in plain language (1–2 sentences max).
+- Prefer more connections over fewer — a learner discovering unexpected links is the whole point of this feature.
 
 Return ONLY valid JSON:
 {
