@@ -1,196 +1,185 @@
-# ⚡ FlashLearnHAI
+# FlashLearn
 
-**FlashLearnHAI** is a Human-AI Interaction (HAI) course project that reimagines how people consume information online. Instead of reading long, unstructured AI-generated responses, users receive concise, persona-aware flashcard learning paths — reducing information overload while preserving depth of understanding.
-
-> Built with Next.js, Gemini 2.5 Flash, and deployed as both a web app and a Chrome browser extension.
+FlashLearn is an AI-powered flashcard generator built as a graduate project for the Human-AI Interaction course at the University of Michigan. You enter any topic, highlight text on a webpage, or pull from a coding problem, and FlashLearn generates structured, adaptive flashcards — with full control over how the AI explains things to you.
 
 ---
 
-## 🎯 Project Motivation
+## Features
 
-Standard AI chatbots (e.g., ChatGPT) often produce verbose responses that require the user to read hundreds of words to extract a few key ideas. FlashLearnHAI addresses this by:
+### Flashcard Generation
 
-- Breaking any topic into **7 structured flashcards**
-- Offering **4 explanation modes** per card: Core, Analogy, Deeper, Visual
-- Enabling **persona-aware generation** calibrated to the user's background
-- Providing **on-demand refinements** (Simplify, Real Example, Drill Deeper, Re-explain)
-- Allowing **follow-up chat** grounded only in the generated learning path
+Enter any topic and FlashLearn generates seven structured flashcards using Google Gemini. Each card includes:
 
-The result: users learn the same topic with significantly fewer words consumed.
+| Field | Description |
+|---|---|
+| `title` | Short concept header |
+| `hook` | One sentence explaining why this concept matters |
+| `content` | Plain-language explanation, written like a conversation |
+| `simpler` | A short analogy for non-technical audiences |
+| `detailed` | Technical depth with bullet points and equations |
+| `visual` | ASCII diagram, table, or code snippet |
+
+Three generation modes activate automatically based on context:
+
+- **Standard** — any open-ended topic or question
+- **LeetCode / Coding** — detected from keywords; structures cards around problem breakdown, test cases, brute force, optimal approach, complexity, and common pitfalls
+- **Source-grounded** — activated by the Chrome extension; generates cards exclusively from the current webpage and includes a verbatim quote per card for back-linking
+
+### Human-in-the-Loop Controls
+
+Before every generation, you configure how the AI should respond:
+
+| Setting | Options |
+|---|---|
+| Persona | Simple, Student, Expert, Industry Pro, or fully custom |
+| Difficulty | Beginner, Medium, Expert, Post-Doc |
+| Your Background | Free-text field (e.g., "CS undergrad familiar with Python") |
+| Additional Context | Free-text field (e.g., "Focus on real-world applications, avoid heavy math") |
+
+An AI Transparency badge displays the active persona and difficulty before every generation so you always know what instructions are being sent to the model.
+
+### View Modes
+
+| Mode | Description |
+|---|---|
+| Cards | Standard flashcard deck with keyboard navigation (arrow keys) |
+| Map | Overview of all cards for quick navigation |
+| Tree | Expand any card into its four explanation branches |
+| Chat | Multi-turn conversation grounded in the current topic and generated cards |
+| Globe | 3D interactive knowledge graph of all topics studied across sessions |
+
+### In-Card Refinement
+
+For any card, one-click actions trigger a targeted follow-up from Gemini:
+
+- **Simplify** — rewrite as a cleaner analogy in two sentences
+- **Real Example** — one vivid, concrete real-world example
+- **Drill Deeper** — five-bullet technical expansion
+- **Re-explain** — regenerates the card with a completely different approach and analogy
+
+Refinements are cached per card per session to avoid redundant API calls.
+
+### Quiz and Remediation
+
+After finishing a learning path, a three-question multiple-choice quiz is generated from the card content. On submission, incorrect concepts automatically trigger remediation cards that are appended to the deck with a different explanation strategy.
+
+### Knowledge Graph
+
+Every topic you study is saved to a persistent knowledge graph stored in `localStorage`. The Globe view renders this as an interactive 3D force-directed graph using Three.js, with:
+
+- Nodes colored by mastery tier (new, connected, mastered)
+- Edges weighted by conceptual connection strength (0 to 1), detected by Gemini
+- Animated particles on strong connections
+- One-sentence AI-generated bridge labels explaining how two topics connect
+
+Enabling **Knowledge Memory** before generating lets the AI read your existing graph and actively connect the new topic to things you have already studied.
+
+### Voice Input and Text-to-Speech
+
+- **Voice input** — speak a question in the Chat view using the Web Speech API (Chrome or Edge, microphone permission required)
+- **Read aloud** — the current card is read using the browser's speech synthesis
 
 ---
 
-## ✨ Features
+## Chrome Extension
 
-### Core Learning
-- 🃏 **7-Card Learning Path** — every topic broken into digestible, sequentially structured cards
-- 🧠 **4 Explanation Modes** — Analogy, Core, Deeper, Visual per card
-- 💡 **Hook Banner** — "Why this matters" curiosity spark on every card
-- 🔁 **On-Demand Refinements** — Simplify, Real Example, Drill Deeper, Re-explain (with caching)
+The extension adds FlashLearn as a side panel in Chrome so you can generate flashcards directly from any webpage without leaving the tab.
 
-### Persona System
-- 👶 Simple (ELI12) / 🎓 Student / 🔬 Expert / 🧑‍💼 Pro presets
-- ✏️ Custom persona input
-- 🎯 Difficulty levels: Beginner / Medium / Expert / Post-Doc
-- 📝 Background and additional context fields
+### How it works
 
-### Navigation Modes
-- 📋 **Card View** — one card at a time with navigation dots
-- 🗺️ **Map View** — see all cards at a glance, jump to any
-- 🌳 **Knowledge Tree** — radial tree visualization of the full learning path
-- 💬 **Chat Mode** — multi-turn Q&A grounded in the generated cards
+1. Highlight any text on a webpage. A small FlashLearn button appears above the selection.
+2. Click the button, or right-click and choose "Generate Flashcards from selection" in the context menu.
+3. The side panel opens, loads the FlashLearn app in an iframe, and passes the selected text, page URL, page title, and extracted page content over to the app.
+4. Source-grounded mode activates automatically and generates cards using only the content from that page.
+5. Each card's "Back to Source" button scrolls the original tab to the relevant quote.
 
-### Session Persistence
-- Persona, background, difficulty, and context saved to `localStorage`
-- Auto-restored on next visit or new Wikipedia selection
-- Chat resets automatically on each new topic
+### Installing the extension locally
 
-### Browser Extension
-- Chrome side panel extension
-- Highlight text on any webpage → generate a learning path instantly
-- Persona settings persist across multiple selections on the same page
+1. Go to `chrome://extensions` in Chrome.
+2. Enable **Developer mode** using the toggle in the top right.
+3. Click **Load unpacked** and select the `extension/` folder.
+4. Pin the FlashLearn extension and navigate to any webpage to try it.
 
-### Quiz + Review (Adaptive Learning)
-
-After the learning cards, users can take a short quiz to test their understanding.
-
-- Generates multiple-choice questions based on the content
-- Provides immediate feedback with explanations
-- Automatically adds review cards for missed concepts
-- Keeps the quiz anchored to the final card for a smooth flow
-
-**Flow:** Learn → Quiz → Feedback → Review
+The extension points to the deployed Vercel app by default. To point it at a local build, update the `APP_URL` constant in `sidepanel.js`.
 
 ---
 
-## 🚀 Getting Started
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| AI Model | Google Gemini 2.5 Flash Lite |
+| 3D Visualization | Three.js + react-force-graph-3d |
+| Math Rendering | KaTeX via react-markdown, remark-math, rehype-katex |
+| Icons | Lucide React |
+| Persistence | localStorage (knowledge graph) |
+| Extension | Chrome Manifest V3 |
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
-- A [Google Gemini API key](https://aistudio.google.com/app/apikey)
+- Node.js 18 or higher
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com)
 
 ### Installation
 
 ```bash
-git clone https://github.com/Bhargavvvv2912/FlashLearn.git
-cd FlashLearn
+git clone <repo-url>
+cd flashlearn
 npm install
 ```
 
 ### Environment Setup
 
-Create a `.env.local` file in the root:
-
-```env
+Create a `.env.local` file in the project root:
 GEMINI_API_KEY=your_gemini_api_key_here
-```
 
-### Run Locally
+text
+
+### Running Locally
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
-## 🧩 Chrome Extension Setup
+## API Reference
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `flashlearn-extension/` folder
-5. Open any webpage (e.g., Wikipedia)
-6. Highlight text → click the FlashLearn extension icon → learning path opens in the side panel
+All AI interactions go through a single endpoint: `POST /api/generate`
 
-> The extension passes the selected text to the deployed Vercel app via URL parameter.
-
----
-
-## 🌐 Deployment
-
-The web app is deployed on Vercel:
-
-**[flash-learn-three.vercel.app](https://flash-learn-three.vercel.app)**
-
-To deploy your own instance:
-
-```bash
-npm run build
-vercel deploy
-```
-
----
-
-## 🔌 API Reference
-
-### `POST /api/generate`
-
-All AI interactions go through a single route. The `action` field determines the behavior.
-
-| Action | Description |
+| `action` value | Description |
 |---|---|
-| *(none)* | Generate a full 7-card learning path for a topic |
-| `simplify` | Simplify the current card content with an analogy |
-| `example` | Give a real-world example for the current card |
-| `drill` | Provide a deeper technical explanation |
-| `regenerate_weak` | Regenerate a card with a completely different approach |
-| `chat` | Answer a follow-up question grounded in the learning path |
-
-#### Generate cards (default)
-```json
-{
-  "topic": "Fluid Dynamics",
-  "about": "CS undergrad",
-  "persona": "Student",
-  "difficulty": "Medium",
-  "context": "Focus on real-world applications"
-}
-```
-
-#### Chat
-```json
-{
-  "action": "chat",
-  "topic": "Fluid Dynamics",
-  "topicSummary": "...",
-  "cards": [...],
-  "question": "Can you connect card 2 and card 4?",
-  "chatHistory": [
-    { "role": "user", "text": "..." },
-    { "role": "assistant", "text": "..." }
-  ],
-  "persona": "Student",
-  "difficulty": "Medium",
-  "about": "CS undergrad",
-  "context": ""
-}
-```
+| (omitted) | Generate a new 7-card learning path |
+| `drill` / `simplify` / `example` | Refine the current card |
+| `regenerateweak` | Re-explain a card with a completely new approach |
+| `chat` | Multi-turn conversation grounded in current cards |
+| `findconnections` | Detect knowledge graph edges between a new topic and existing nodes |
+| `quiz` | Generate a 3-question multiple-choice quiz from current cards |
+| `remediate` | Generate targeted review cards for quiz mistakes |
 
 ---
 
-## 🏗️ Tech Stack
+## HAI Design Principles
 
-| Layer | Technology |
-|---|---|
-| Framework | Next.js 14 (App Router) |
-| AI Model | Google Gemini 2.5 Flash |
-| Styling | Tailwind CSS |
-| Math Rendering | KaTeX + remark-math + rehype-katex |
-| Markdown | react-markdown |
-| Icons | Lucide React |
-| Deployment | Vercel |
-| Extension | Chrome MV3 (Side Panel API) |
+This project was built for the Human-AI Interaction course with the following principles guiding the design:
 
+1. **Human in the loop, always.** The AI never generates silently. Every generation is explicitly configured and initiated by the user.
+2. **Transparent AI configuration.** The transparency badge shows the active persona and difficulty before every call so users know what instructions are being sent.
+3. **User-controlled adaptation.** Instead of the AI automatically deciding how to explain something, users choose their explanation level and can change it at any time.
+4. **Grounded responses.** The Chat view is explicitly grounded in the current session's cards. The model is instructed not to go beyond what was generated.
+5. **Feedback-driven remediation.** Quiz mistakes drive targeted re-explanation, closing the loop between AI output and learner understanding.
 
+---
 
+## Team
 
-## 👤 Author
-
-**Bhargav Keralapur Srinidhi**,
-**Haripreeth Avarur**,
-**Mohammed Almakrami**,
-Human-AI Interaction Course Project
-University of Michigan, Ann Arbor
+Built as a graduate course project at the University of Michigan — Human-AI Interaction.
