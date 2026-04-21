@@ -396,7 +396,7 @@ Return ONLY valid JSON:
         .join('\n');
 
       const connectionPrompt = `
-You are a knowledge graph builder. A learner just studied a new topic. Find genuine intellectual connections to their existing knowledge.
+You are a knowledge graph builder. A learner just studied a new topic. Find only the strongest, most intellectually substantive connections to their existing knowledge.
 
 New topic: "${newTopic}"
 New topic summary: "${newSummary}"
@@ -405,10 +405,15 @@ Learner's existing topics:
 ${topicList}
 
 RULES:
-- Only include real intellectual connections: shared principles, mathematical links, cause-effect, historical relationship, analogous structures.
-- Skip surface-level or superficial connections.
-- Rate strength 1–10. Only return connections with strength ≥ 4.
-- "bridge" must be one precise sentence explaining HOW they connect.
+- Only include DEEP intellectual connections: shared mathematical foundations, direct cause-effect relationships, analogous computational or physical structures, overlapping formal methods, or topics that are prerequisite/successor to each other.
+- EXPLICITLY REJECT the following — they are NOT valid connections:
+  • Naming coincidences or shared vocabulary with different meanings
+  • Metaphorical parallels ("both involve networks", "both deal with flow", "both involve agents")
+  • Topics from entirely different domains (e.g., fiction vs. technical protocols, entertainment vs. engineering) unless they share a DIRECT structural or mathematical parallel — not just a vague analogy
+  • Connections justified only by "related fields" or "both are important in tech"
+- Rate connection strength 1–10 based on HOW DIRECTLY the two topics share underlying principles, equations, or mechanisms. Be conservative.
+- Only return connections with strength ≥ 6. Return an empty array if no strong connections exist — that is the correct answer when topics are truly unrelated.
+- "bridge" must name the SPECIFIC shared principle, equation, structure, or mechanism. Vague bridges like "both involve communication" or "both use graphs" are INVALID and must not be returned.
 
 Return ONLY valid JSON:
 {
@@ -416,7 +421,7 @@ Return ONLY valid JSON:
     {
       "existingTopic": "exact name from the list above",
       "strength": 8,
-      "bridge": "Both fluid dynamics and thermodynamics describe energy transfer through a medium using differential equations."
+      "bridge": "Both fluid dynamics and thermodynamics describe energy transfer through a medium using the same class of partial differential equations (conservation laws)."
     }
   ]
 }
