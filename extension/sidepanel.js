@@ -1,4 +1,5 @@
-const APP_URL = 'https://flash-learn-three.vercel.app';
+const APP_URL = 'https://flash-learn-three.vercel.app/';
+const ORIGIN = APP_URL.replace(/\/$/, ''); // event.origin never has a trailing slash
 const frame = document.getElementById('flashlearn-frame');
 
 let storedTabId = null;
@@ -9,7 +10,7 @@ frame.addEventListener('load', () => {
   if (pendingContext) {
     // Small delay ensures React has fully hydrated
     setTimeout(() => {
-      frame.contentWindow.postMessage(pendingContext, APP_URL);
+      frame.contentWindow.postMessage(pendingContext, ORIGIN);
       pendingContext = null;
     }, 150);
   }
@@ -17,7 +18,7 @@ frame.addEventListener('load', () => {
 
 // Listen for "Back to Source" requests from the iframe
 window.addEventListener('message', (event) => {
-  if (event.origin !== APP_URL) return;
+  if (event.origin !== ORIGIN) return;
   if (event.data?.type === 'FLASHLEARN_GOTO_SOURCE') {
     const { anchor } = event.data;
     if (storedTabId && anchor) {
@@ -47,10 +48,13 @@ chrome.storage.local.get(
       };
     }
 
+    // Cache-buster: append timestamp so Chrome always fetches the latest Vercel deploy
+    const bust = `_cb=${Date.now()}`;
+
     if (text) {
-      frame.src = `${APP_URL}/?selectedText=${encodeURIComponent(text)}`;
+      frame.src = `${APP_URL}/?selectedText=${encodeURIComponent(text)}&${bust}`;
     } else {
-      frame.src = APP_URL;
+      frame.src = `${APP_URL}/?${bust}`;
     }
 
     chrome.storage.local.remove([

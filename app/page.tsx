@@ -1,22 +1,45 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import {
   ChevronRight, ChevronLeft, Zap, Info, Map as MapIcon,
   LayoutList, BrainCircuit, Sparkles, RefreshCcw, MessageSquare,
   Plus, Minus, Terminal, Lightbulb, GitBranch, ExternalLink,
-  Globe, Brain, Trash2
+  Globe, Brain, Trash2, Mic, MicOff, Shield, BookOpen, Network, Volume2, VolumeX
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {
-  loadGraph, upsertNode, mergeEdges, clearGraph,
+  loadGraph, upsertNode, mergeEdges, clearGraph, topicToId,
+  upsertGraphNode, upsertGraphEdge,
   getTopConnectedNodes, getIsolatedNodes, getTopicGraph,
-  type KnowledgeGraph,
+  type KnowledgeGraph, type KnowledgeRelation,
 } from './lib/knowledgeGraph';
 import type { GlobeNode } from './components/KnowledgeGlobe';
+
+type SpeechRecognitionResultListLike = {
+  [index: number]: { [index: number]: { transcript: string } };
+};
+type SpeechRecognitionEventLike = { results: SpeechRecognitionResultListLike };
+type SpeechRecognitionErrorEventLike = { error: string };
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+};
 
 const KnowledgeGlobe = dynamic(
   () => import('./components/KnowledgeGlobe'),
@@ -55,10 +78,36 @@ interface QuizData {
   questions: QuizQuestion[];
 }
 
+type ExpansionAction = 'simplify' | 'example' | 'drill' | 'reexplain';
+type ExpansionRelation = Extract<
+  KnowledgeRelation,
+  'simplify' | 'example' | 'reexplain' | 'drill_deeper'
+>;
+type GraphNodeInput = Parameters<typeof upsertGraphNode>[0];
+type GraphEdgeInput = Parameters<typeof upsertGraphEdge>[0];
+type ExpansionMiniCard = {
+  id?: string;
+  title: string;
+  content: string;
+};
+type QuestionAnswerCard = {
+  title: string;
+  content: string;
+};
+type ExpansionPanel = {
+  action: ExpansionAction;
+  cards: ExpansionMiniCard[];
+  activeIndex: number;
+};
 type ViewMode = 'cards' | 'map' | 'tree' | 'chat' | 'globe';
 type TreeBranch = 'normal' | 'simpler' | 'detailed' | 'visual' | null;
 
-type ChatMessage = { role: 'user' | 'assistant'; text: string };
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  text?: string;
+  cards?: QuestionAnswerCard[];
+};
 
 const PERSONA_CHIPS = [
   { label: '👶 Simple', value: 'Explain like I am 12 years old with no technical background', color: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -102,15 +151,20 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refinement, setRefinement] = useState<string | null>(null);
-  const [isRefining, setIsRefining] = useState(false);
-  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [expansions, setExpansions] = useState<Record<number, ExpansionPanel>>({});
+  const [expansionCache, setExpansionCache] = useState<Record<string, ExpansionMiniCard[]>>({});
+  const [expansionLoading, setExpansionLoading] = useState<{
+    cardIndex: number;
+    action: ExpansionAction;
+  } | null>(null);
+  const [expansionErrors, setExpansionErrors] = useState<Record<number, string>>({});
   const [showHook, setShowHook] = useState(true);
-  const [refinementCache, setRefinementCache] = useState<Record<string, string>>({});
 
-  // tree state
+  // tree/map selection state
   const [treeFocusCardIndex, setTreeFocusCardIndex] = useState<number | null>(null);
   const [treeSelectedBranch, setTreeSelectedBranch] = useState<TreeBranch>(null);
+  const [treeSelectedNodeId, setTreeSelectedNodeId] = useState<string | null>(null);
+  const [mapSelectedExpansionNodeId, setMapSelectedExpansionNodeId] = useState<string | null>(null);
 
   // chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -128,6 +182,16 @@ export default function Home() {
   const [globeSelectedNode, setGlobeSelectedNode] = useState<GlobeNode | null>(null);
   const [connectionsFound, setConnectionsFound] = useState(0);
   const [showConnectionsToast, setShowConnectionsToast] = useState(false);
+  const [currentTopicNodeId, setCurrentTopicNodeId] = useState<string | null>(null);
+
+  const topicUniverseGraph = useMemo<KnowledgeGraph>(
+    () => getTopicGraph(knowledgeGraph),
+    [knowledgeGraph],
+  );
+  const isolatedTopicNodes = useMemo(
+    () => getIsolatedNodes(topicUniverseGraph),
+    [topicUniverseGraph],
+  );
 
    // quiz state
   const [quizData, setQuizData] = useState<QuizData | null>(null);
@@ -137,6 +201,23 @@ export default function Home() {
   const [quizScore, setQuizScore] = useState<number | null>(null);
   const [quizAnchorIndex, setQuizAnchorIndex] = useState<number | null>(null);
 
+  // splash / onboarding
+  const [showSplash, setShowSplash] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !localStorage.getItem('flashlearn_seen_splash');
+  });
+
+  // voice input
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  // text-to-speech
+  const [isReading, setIsReading] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // HAI transparency panel
+  const [showHAIPanel, setShowHAIPanel] = useState(false);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem('flashlearn_about', about);
@@ -145,6 +226,55 @@ export default function Home() {
     localStorage.setItem('flashlearn_difficulty', difficulty);
     localStorage.setItem('flashlearn_context', context);
   }, [about, persona, customPersona, difficulty, context]);
+
+  const clearExpansionForCard = (cardIndex: number) => {
+    setExpansions((prev) => {
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
+    setExpansionErrors((prev) => {
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
+    setExpansionLoading((current) =>
+      current?.cardIndex === cardIndex ? null : current,
+    );
+  };
+
+  // Cancel TTS when card or view changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) {
+      window.speechSynthesis.cancel();
+      const timeout = window.setTimeout(() => setIsReading(false), 0);
+      return () => window.clearTimeout(timeout);
+    }
+  }, [index, view]);
+
+  // Keyboard shortcuts for card navigation
+  useEffect(() => {
+    if (!data) return;
+    const cardCount = data.cards?.length ?? 7;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'ArrowRight' && viewMode === 'cards') {
+        setIndex((i) => Math.min(cardCount - 1, i + 1));
+        clearExpansionForCard(index);
+        setView('normal');
+        setShowHook(true);
+      } else if (e.key === 'ArrowLeft' && viewMode === 'cards') {
+        setIndex((i) => Math.max(0, i - 1));
+        clearExpansionForCard(index);
+        setView('normal');
+        setShowHook(true);
+      } else if (e.key === 'c' && viewMode !== 'chat') {
+        setViewMode('chat');
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [data, index, viewMode]);
 
   // Receive page context from the extension side panel via postMessage
   useEffect(() => {
@@ -161,10 +291,87 @@ export default function Home() {
 
   const getActivePersona = () => (useCustomPersona ? customPersona : persona);
   const CARD_COUNT = data?.cards?.length ?? 7;
-  const currentCard = data?.cards?.[index] || null;
+
+  const startRecognition = () => {
+    const speechWindow = window as SpeechRecognitionWindow;
+    const SR = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!SR) {
+      setError('Voice input requires Chrome or Edge.');
+      return;
+    }
+    const recognition = new SR();
+    recognitionRef.current = recognition;
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (event: SpeechRecognitionEventLike) => {
+      setChatInput(event.results[0][0].transcript);
+    };
+    recognition.onerror = (event: SpeechRecognitionErrorEventLike) => {
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setError('Microphone blocked. Click the lock icon in your browser address bar and allow microphone for this site, then try again.');
+      } else if (event.error !== 'no-speech') {
+        setError(`Voice error: ${event.error}`);
+      }
+    };
+    recognition.start();
+  };
+
+  const handleVoiceInput = () => {
+    if (isListening) { recognitionRef.current?.stop(); return; }
+    // Pre-warm mic permission so Chrome shows the permission dialog if needed
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => startRecognition())
+        .catch(() => setError('Microphone access denied. Allow microphone access in your browser for this site, then try again.'));
+    } else {
+      startRecognition();
+    }
+  };
+
+  const handleReadAloud = () => {
+    if (!currentCard || typeof window === 'undefined' || !window.speechSynthesis) return;
+    if (isReading || window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+      return;
+    }
+    const cardText = [
+      `Card ${index + 1}: ${asText(currentCard.title)}.`,
+      asText(currentCard.hook),
+      view === 'simpler' ? asText(currentCard.simpler) :
+      view === 'detailed' ? asText(currentCard.detailed) :
+      view === 'visual' ? 'Visual diagram available on screen.' :
+      asText(currentCard.content),
+    ].filter(Boolean).join(' ');
+
+    const utterance = new SpeechSynthesisUtterance(cardText);
+    utteranceRef.current = utterance;
+    utterance.rate = 0.9;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    utterance.onstart = () => setIsReading(true);
+    utterance.onend = () => setIsReading(false);
+    utterance.onerror = () => setIsReading(false);
+    window.speechSynthesis.speak(utterance);
+  };
 
   const asText = (value: unknown) =>
     Array.isArray(value) ? value.join('\n') : String(value ?? '');
+
+  const currentCard = data?.cards?.[index] || null;
+  const suggestedQuestions = useMemo(() => {
+    const firstTitle = data?.cards?.[0]?.title;
+    const currentTitle = currentCard?.title;
+    return [
+      `Can you connect ${asText(firstTitle || 'card 1')} to ${asText(currentTitle || 'this card')}?`,
+      'What is the simplest intuition behind this?',
+      'What is one real-world example of this idea?',
+    ];
+  }, [currentCard, data]);
 
   const errorBanner =
     error ? (
@@ -182,6 +389,192 @@ export default function Home() {
         </button>
       </div>
     ) : null;
+
+  const getTopicNodeId = () => currentTopicNodeId || (topic.trim() ? topicToId(topic) : 'current-topic');
+  const getMainCardNodeId = (cardIndex: number) => `${getTopicNodeId()}-card-${cardIndex + 1}`;
+  const getReviewGroupId = () => `${getTopicNodeId()}-review`;
+
+  const expansionLabels: Record<ExpansionAction, string> = {
+    simplify: 'Simplify',
+    example: 'Real Example',
+    drill: 'Drill Deeper',
+    reexplain: 'Re-explain',
+  };
+
+  const expansionRelationByAction: Record<ExpansionAction, ExpansionRelation> = {
+    simplify: 'simplify',
+    example: 'example',
+    drill: 'drill_deeper',
+    reexplain: 'reexplain',
+  };
+
+  const syncKnowledgeGraph = () => setKnowledgeGraph({ ...loadGraph() });
+
+  const saveGraphNode = (node: GraphNodeInput) => {
+    upsertGraphNode(node);
+  };
+
+  const saveGraphEdge = (edge: GraphEdgeInput) => {
+    upsertGraphEdge(edge);
+  };
+
+  const persistMainCardNodes = (
+    cards: Card[],
+    topicNodeId: string,
+    topicName: string,
+    topicSummary: string,
+  ) => {
+    cards.slice(0, 7).forEach((card, cardIndex) => {
+      const cardId = `${topicNodeId}-card-${cardIndex + 1}`;
+      saveGraphNode({
+        id: cardId,
+        topic: `Card ${cardIndex + 1}: ${asText(card.title)}`,
+        summary: asText(card.content).slice(0, 240),
+        type: 'main',
+        relation: 'main',
+        parentId: topicNodeId,
+        cardIndex,
+      });
+      saveGraphEdge({
+        source: topicNodeId,
+        target: cardId,
+        weight: 0.8,
+        bridge: `${topicName} learning path card ${cardIndex + 1}`,
+        label: 'Main',
+        relation: 'main',
+      });
+    });
+    if (cards.length > 0) {
+      saveGraphNode({
+        id: topicNodeId,
+        topic: topicName,
+        summary: topicSummary,
+      });
+    }
+    syncKnowledgeGraph();
+  };
+
+  const persistExpansionNodes = (
+    cardIndex: number,
+    action: ExpansionAction,
+    cards: ExpansionMiniCard[],
+  ): ExpansionMiniCard[] => {
+    if (!data) return cards;
+
+    const relation = expansionRelationByAction[action];
+    const label = expansionLabels[action];
+    const parentCard = data.cards[cardIndex];
+    const parentId = getMainCardNodeId(cardIndex);
+    const groupId = `${parentId}-${relation}`;
+
+    saveGraphNode({
+      id: parentId,
+      topic: `Card ${cardIndex + 1}: ${asText(parentCard?.title)}`,
+      summary: asText(parentCard?.content).slice(0, 240),
+      type: 'main',
+      relation: 'main',
+      parentId: getTopicNodeId(),
+      cardIndex,
+    });
+    saveGraphNode({
+      id: groupId,
+      topic: label,
+      summary: `${label} refinements for ${asText(parentCard?.title)}`,
+      type: 'expansion_group',
+      relation,
+      parentId,
+      cardIndex,
+    });
+    saveGraphEdge({
+      source: parentId,
+      target: groupId,
+      weight: 0.8,
+      bridge: `${label} expansion of ${asText(parentCard?.title)}`,
+      label,
+      relation,
+    });
+
+    const enrichedCards = cards.slice(0, 2).map((card, miniIndex) => {
+      const nodeId = `${groupId}-${miniIndex + 1}`;
+      saveGraphNode({
+        id: nodeId,
+        topic: `${label}: ${card.title}`,
+        summary: card.content,
+        type: 'expansion',
+        relation,
+        parentId: groupId,
+        cardIndex,
+      });
+      saveGraphEdge({
+        source: groupId,
+        target: nodeId,
+        weight: 0.7,
+        bridge: `${label} sub-card ${miniIndex + 1}`,
+        label,
+        relation,
+      });
+      return { ...card, id: nodeId };
+    });
+
+    syncKnowledgeGraph();
+    return enrichedCards;
+  };
+
+  const persistReviewNodes = (reviewCards: Card[]) => {
+    const groupId = getReviewGroupId();
+
+    saveGraphNode({
+      id: groupId,
+      topic: 'Review',
+      summary: 'Reinforcement cards generated from quiz misses.',
+      type: 'review_group',
+      relation: 'review',
+      reviewGroupId: groupId,
+    });
+
+    reviewCards.forEach((card, reviewIndex) => {
+      const nodeId = `${groupId}-card-${reviewIndex + 1}`;
+      saveGraphNode({
+        id: nodeId,
+        topic: `Review ${reviewIndex + 1}: ${asText(card.title)}`,
+        summary: asText(card.content).slice(0, 240),
+        type: 'review',
+        relation: 'review',
+        parentId: groupId,
+        reviewGroupId: groupId,
+        cardIndex: 7 + reviewIndex,
+      });
+      saveGraphEdge({
+        source: groupId,
+        target: nodeId,
+        weight: 0.75,
+        bridge: `Review card ${reviewIndex + 1}`,
+        label: 'Review',
+        relation: 'review',
+      });
+    });
+
+    syncKnowledgeGraph();
+  };
+
+  const getExpansionGroupsForCard = (cardIndex: number) => {
+    const parentId = getMainCardNodeId(cardIndex);
+    return knowledgeGraph.nodes
+      .filter((node) => node.type === 'expansion_group' && node.parentId === parentId)
+      .sort((a, b) => a.topic.localeCompare(b.topic));
+  };
+
+  const getExpansionNodesForGroup = (groupId: string) =>
+    knowledgeGraph.nodes
+      .filter((node) => node.type === 'expansion' && node.parentId === groupId)
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+  const getReviewNodes = () => {
+    const groupId = getReviewGroupId();
+    return knowledgeGraph.nodes
+      .filter((node) => node.type === 'review' && node.reviewGroupId === groupId)
+      .sort((a, b) => (a.cardIndex ?? 0) - (b.cardIndex ?? 0));
+  };
 
   const generateCards = async () => {
     if (!topic.trim()) return;
@@ -219,13 +612,18 @@ export default function Home() {
       } else {
         setData(result);
         setIndex(0);
-        setRefinement(null);
-        setRefinementCache({});
+        setExpansions({});
+        setExpansionCache({});
+        setExpansionErrors({});
+        setExpansionLoading(null);
+        setCurrentTopicNodeId(null);
         setShowHook(true);
         setViewMode('cards');
         setView('normal');
         setTreeFocusCardIndex(null);
         setTreeSelectedBranch(null);
+        setTreeSelectedNodeId(null);
+        setMapSelectedExpansionNodeId(null);
         setChatMessages([]);
         setChatInput('');
         setQuizData(null);
@@ -245,7 +643,9 @@ export default function Home() {
 
         // Save topic to knowledge graph
         const { graph: updatedGraph, nodeId } = upsertNode(kgTopicName, result.topic_summary || topic);
+        setCurrentTopicNodeId(nodeId);
         setKnowledgeGraph({ ...updatedGraph });
+        persistMainCardNodes(result.cards || [], nodeId, kgTopicName, result.topic_summary || topic);
 
         // Fire-and-forget: find connections to existing topics
         const updatedTopicGraph = getTopicGraph(updatedGraph);
@@ -283,16 +683,56 @@ export default function Home() {
     setLoading(false);
   };
 
-  const handleRefine = async (action: 'drill' | 'simplify' | 'example') => {
+  const expansionAccent: Record<ExpansionAction, string> = {
+    simplify: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    example: 'border-amber-200 bg-amber-50 text-amber-700',
+    drill: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    reexplain: 'border-rose-200 bg-rose-50 text-rose-700',
+  };
+
+  const handleExpansion = async (action: ExpansionAction) => {
     if (!data) return;
 
-    const cacheKey = `${index}:${action}`;
-    if (refinementCache[cacheKey]) {
-      setRefinement(refinementCache[cacheKey]);
+    const cacheKey = `${index}:${view}:${action}`;
+    if (expansions[index]?.action === action) {
+      setExpansions((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+      setExpansionErrors((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
       return;
     }
 
-    setIsRefining(true);
+    if (expansionCache[cacheKey]) {
+      const cachedCards = persistExpansionNodes(index, action, expansionCache[cacheKey]);
+      setExpansions((prev) => ({
+        ...prev,
+        [index]: { action, cards: cachedCards, activeIndex: 0 },
+      }));
+      setExpansionErrors((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+      return;
+    }
+
+    setExpansionLoading({ cardIndex: index, action });
+    setExpansions((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+    setExpansionErrors((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
     setError(null);
 
     const currentText =
@@ -309,10 +749,13 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action,
+          action: 'expand',
+          expansionAction: action,
+          cardTitle: asText(data.cards[index].title),
           currentContent: currentText,
           about,
           persona: getActivePersona(),
+          difficulty,
           context,
         }),
       });
@@ -320,77 +763,55 @@ export default function Home() {
       const result = await res.json();
 
       if (result.error) {
-        setError(`Refinement failed: ${result.error}`);
-      } else {
-        setRefinement(result.newContent);
-        setRefinementCache((prev) => ({
+        setExpansionErrors((prev) => ({
           ...prev,
-          [cacheKey]: result.newContent,
+          [index]: `Expansion failed: ${result.error}`,
         }));
-      }
-    } catch (e) {
-      console.error(e);
-      setError('Refinement failed. Please try again.');
-    }
-
-    setIsRefining(false);
-  };
-
-  const handleRegenerateCard = async () => {
-    if (!data) return;
-    setIsRegenerating(true);
-    setError(null);
-
-    const card = data.cards[index];
-
-    try {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'regenerate_weak',
-          weakCards: [
-            {
-              id: card.id,
-              title: asText(card.title),
-              content: asText(card.content),
-            },
-          ],
-          about,
-          persona: getActivePersona(),
-          context,
-        }),
-      });
-
-      const result = await res.json();
-
-      if (result.error) {
-        setError(`Regeneration failed: ${result.error}`);
       } else {
-        const regen = result.regenerated?.[0];
-        if (regen) {
-          const updatedCards = data.cards.map((c, i) =>
-            i === index ? { ...c, ...regen } : c,
-          );
-          setData({ ...data, cards: updatedCards });
-          setRefinement(null);
-          setShowHook(true);
-
-          setRefinementCache((prev) => {
-            const next = { ...prev };
-            delete next[`${index}:simplify`];
-            delete next[`${index}:example`];
-            delete next[`${index}:drill`];
-            return next;
-          });
+        const cards = Array.isArray(result.cards) ? result.cards : [];
+        if (cards.length !== 2) {
+          setExpansionErrors((prev) => ({
+            ...prev,
+            [index]: 'Expansion returned an unexpected shape. Please try again.',
+          }));
+        } else {
+          const enrichedCards = persistExpansionNodes(index, action, cards);
+          setExpansions((prev) => ({
+            ...prev,
+            [index]: { action, cards: enrichedCards, activeIndex: 0 },
+          }));
+          setExpansionCache((prev) => ({
+            ...prev,
+            [cacheKey]: enrichedCards,
+          }));
         }
       }
     } catch (e) {
       console.error(e);
-      setError('Regeneration failed. Please try again.');
+      setExpansionErrors((prev) => ({
+        ...prev,
+        [index]: 'Expansion failed. Please try again.',
+      }));
     }
 
-    setIsRegenerating(false);
+    setExpansionLoading((current) =>
+      current?.cardIndex === index && current.action === action ? null : current,
+    );
+  };
+
+  const moveExpansion = (cardIndex: number, direction: -1 | 1) => {
+    setExpansions((prev) => {
+      const panel = prev[cardIndex];
+      if (!panel) return prev;
+      const nextIndex = Math.min(
+        Math.max(panel.activeIndex + direction, 0),
+        panel.cards.length - 1,
+      );
+      return {
+        ...prev,
+        [cardIndex]: { ...panel, activeIndex: nextIndex },
+      };
+    });
   };
 
   const resetNavigation = (
@@ -398,12 +819,14 @@ export default function Home() {
     newView?: 'normal' | 'simpler' | 'detailed' | 'visual',
   ) => {
     setIndex(newIndex);
-    setRefinement(null);
     setView(newView || 'normal');
     setShowHook(true);
   };
 
   const getTreeBranchContent = () => {
+    if (treeSelectedNodeId) {
+      return knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.summary || '';
+    }
     if (!data || treeFocusCardIndex === null || treeSelectedBranch === null)
       return '';
     const card = data.cards[treeFocusCardIndex];
@@ -418,9 +841,10 @@ export default function Home() {
     if (!data || !chatInput.trim()) return;
 
     const userMessage = chatInput.trim();
+    const questionId = `question-${Date.now()}`;
     const nextHistory: ChatMessage[] = [
       ...chatMessages,
-      { role: 'user', text: userMessage },
+      { id: questionId, role: 'user', text: userMessage },
     ];
 
     setChatMessages(nextHistory);
@@ -433,7 +857,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'chat',
+          action: 'question_cards',
           topic,
           about,
           persona: getActivePersona(),
@@ -451,10 +875,19 @@ export default function Home() {
       if (result.error) {
         setError(`Chat failed: ${result.error}`);
       } else {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'assistant', text: result.reply },
-        ]);
+        const answerCards = Array.isArray(result.cards) ? result.cards : [];
+        if (answerCards.length === 0) {
+          setError('Chat failed: answer cards were not generated. Please try again.');
+        } else {
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: `answer-${Date.now()}`,
+              role: 'assistant',
+              cards: answerCards,
+            },
+          ]);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -553,20 +986,98 @@ export default function Home() {
       if (result.error) {
         setError(`Remediation failed: ${result.error}`);
       } else {
+        const reviewCards = Array.isArray(result.cards) ? result.cards : [];
+        const allReviewCards = [...data.cards.slice(7), ...reviewCards];
         setData((prev) =>
           prev
             ? {
                 ...prev,
-                cards: [...prev.cards, ...result.cards],
+                cards: [...prev.cards, ...reviewCards],
               }
             : prev
         );
+        persistReviewNodes(allReviewCards);
       }
     } catch (e) {
       console.error(e);
       setError('Remediation failed. Please try again.');
     }
   };
+
+  // SPLASH / LANDING VIEW
+  if (showSplash) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex flex-col items-center justify-center p-6">
+        <div className="w-full max-w-2xl space-y-8 text-center">
+          {/* Hero */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-center gap-3">
+              <div className="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg">
+                <Zap className="w-8 h-8 text-white" />
+              </div>
+              <h1 className="text-4xl font-black text-slate-900 tracking-tight">FlashLearn</h1>
+            </div>
+            <p className="text-xl text-slate-600 max-w-lg mx-auto leading-relaxed">
+              Learn anything, your way: AI-powered flashcards that adapt to <em>how you think</em>
+            </p>
+            <p className="text-xs font-black uppercase tracking-widest text-indigo-500">
+              Built for Human-AI Interaction · University of Michigan
+            </p>
+          </div>
+
+          {/* Feature grid */}
+          <div className="grid grid-cols-3 gap-4 text-left">
+            {[
+              { icon: BrainCircuit, color: 'text-indigo-600', bg: 'bg-indigo-50', title: 'You Control the AI', desc: 'Set your persona, level, and background. The AI adapts its explanation to exactly how you learn.' },
+              { icon: MessageSquare, color: 'text-emerald-600', bg: 'bg-emerald-50', title: 'Ask Anything', desc: 'Multi-turn AI chat grounded in your cards. Get answers, not links. Try voice input too.' },
+              { icon: Network, color: 'text-purple-600', bg: 'bg-purple-50', title: 'Knowledge Map', desc: 'Watch topics form a 3D knowledge graph as you learn. See how ideas connect across sessions.' },
+            ].map(({ icon: Icon, color, bg, title, desc }) => (
+              <div key={title} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+                <div className={`w-8 h-8 ${bg} rounded-xl flex items-center justify-center mb-3`}>
+                  <Icon className={`w-4 h-4 ${color}`} />
+                </div>
+                <p className="font-black text-slate-800 text-sm mb-1">{title}</p>
+                <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* HAI principle note */}
+          <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-left flex gap-3 items-start">
+            <Shield className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-black text-indigo-800">Human in the Loop: Always</p>
+              <p className="text-xs text-indigo-600 mt-0.5 leading-relaxed">
+                FlashLearn never generates silently. You choose the persona, difficulty, and context before every explanation. The AI follows your lead, not the other way around.
+              </p>
+            </div>
+          </div>
+
+          {/* Also works as Chrome extension */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-3 text-left">
+            <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
+            <p className="text-xs text-slate-500 leading-relaxed">
+              <span className="font-black text-slate-700">Chrome Extension available.</span>{' '}
+              Highlight any text on any webpage and generate flashcards from that source, with Back-to-Source linking.
+            </p>
+          </div>
+
+          <button
+            onClick={() => {
+              localStorage.setItem('flashlearn_seen_splash', '1');
+              setShowSplash(false);
+            }}
+            className="w-full py-4 bg-indigo-600 text-white font-black text-base uppercase tracking-widest rounded-2xl hover:bg-indigo-700 transition-colors shadow-lg focus:outline-none focus:ring-4 focus:ring-indigo-300"
+            autoFocus
+            aria-label="Get started with FlashLearn"
+          >
+            Start Learning →
+          </button>
+          <p className="text-xs text-slate-400">Free · Works on any topic · No account required</p>
+        </div>
+      </div>
+    );
+  }
 
   // SETUP VIEW
   if (!data && !loading) {
@@ -581,7 +1092,7 @@ export default function Home() {
               </h1>
             </div>
             <p className="text-slate-500 text-sm">
-              Understand any topic — without the information overload
+              Understand any topic, without the information overload
             </p>
           </div>
 
@@ -644,6 +1155,37 @@ export default function Home() {
                 className="mt-2 w-full p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
               />
             )}
+          </div>
+
+          {/* HAI Transparency Badge */}
+          <div
+            className="flex items-start gap-3 bg-indigo-50 border border-indigo-100 rounded-xl p-3 cursor-pointer hover:border-indigo-300 transition-colors"
+            onClick={() => setShowHAIPanel(v => !v)}
+            role="button"
+            tabIndex={0}
+            aria-expanded={showHAIPanel}
+            aria-label="AI transparency: see how the AI is configured"
+            onKeyDown={(e) => e.key === 'Enter' && setShowHAIPanel(v => !v)}
+          >
+            <Shield className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-black text-indigo-700 uppercase tracking-widest">
+                AI Mode: {useCustomPersona ? (customPersona || 'Custom') : persona} · {difficulty}
+              </p>
+              <p className="text-[10px] text-indigo-500 mt-0.5">
+                {showHAIPanel ? 'Hide' : 'See'} how the AI will explain this topic to you →
+              </p>
+              {showHAIPanel && (
+                <div className="mt-2 space-y-1.5 text-[11px] text-indigo-700">
+                  <p><span className="font-black">Persona:</span> {useCustomPersona ? (customPersona || 'Not set') : persona}</p>
+                  <p><span className="font-black">Difficulty:</span> {difficulty}: AI calibrates vocabulary and depth to this level</p>
+                  {about && <p><span className="font-black">Your background:</span> {about.slice(0, 120)}{about.length > 120 ? '…' : ''}</p>}
+                  <p className="text-indigo-400 pt-1 border-t border-indigo-100">
+                    The AI only uses the persona and settings <em>you</em> choose. You can change them anytime before generating.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
 
           <div>
@@ -724,7 +1266,7 @@ export default function Home() {
           </div>
 
           {/* Memory mode toggle */}
-          {knowledgeGraph.nodes.length > 0 && (
+          {topicUniverseGraph.nodes.length > 0 && (
             <button
               onClick={() => setUseMemory((v) => !v)}
               className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
@@ -739,7 +1281,7 @@ export default function Home() {
                   Use Knowledge Memory {useMemory ? '(ON)' : '(OFF)'}
                 </p>
                 <p className="text-[10px] mt-0.5 opacity-70">
-                  Bridge this topic to your {knowledgeGraph.nodes.length} previous topics
+                  Bridge this topic to your {topicUniverseGraph.nodes.length} previous topics
                 </p>
               </div>
               <div className={`w-8 h-4 rounded-full transition-colors shrink-0 ${useMemory ? 'bg-indigo-500' : 'bg-slate-300'}`}>
@@ -766,7 +1308,8 @@ export default function Home() {
           <button
             onClick={generateCards}
             disabled={!topic.trim()}
-            className="w-full py-4 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            aria-label={topic.trim() ? `Generate flashcards for ${topic}` : 'Enter a topic to generate flashcards'}
+            className="w-full py-4 bg-indigo-600 text-white font-black text-sm uppercase tracking-widest rounded-2xl hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-4 focus:ring-indigo-300"
           >
             Generate Learning Path →
           </button>
@@ -792,8 +1335,47 @@ export default function Home() {
   quizAnchorIndex !== null
     ? index === quizAnchorIndex
     : index === CARD_COUNT - 1;
-  const topicUniverseGraph = getTopicGraph(knowledgeGraph);
-  const isolatedTopicNodes = getIsolatedNodes(topicUniverseGraph);
+  const currentExpansion = expansions[index];
+  const currentExpansionError = expansionErrors[index];
+  const activeExpansionLoading =
+    expansionLoading?.cardIndex === index ? expansionLoading : null;
+  const mainTreeCards = data?.cards.slice(0, 7) ?? [];
+  const reviewNodes = getReviewNodes();
+  const topLevelTreeCount = mainTreeCards.length + (reviewNodes.length > 0 ? 1 : 0);
+  const TREE_NODE_WIDTH = 160;
+  const TREE_NODE_GAP = 18;
+  const getSiblingRowWidth = (count: number) =>
+    Math.max(TREE_NODE_WIDTH, count * TREE_NODE_WIDTH + Math.max(count - 1, 0) * TREE_NODE_GAP);
+  const getGroupBranchWidth = (groupId: string) =>
+    getSiblingRowWidth(Math.max(getExpansionNodesForGroup(groupId).length, 1));
+  const getCardBranchWidth = (cardIndex: number) => {
+    const groups = getExpansionGroupsForCard(cardIndex);
+    if (groups.length === 0) return TREE_NODE_WIDTH;
+    return Math.max(
+      TREE_NODE_WIDTH,
+      groups.reduce((sum, group) => sum + getGroupBranchWidth(group.id), 0) +
+        Math.max(groups.length - 1, 0) * TREE_NODE_GAP,
+    );
+  };
+  const reviewBranchWidth = reviewNodes.length > 0 ? getSiblingRowWidth(reviewNodes.length) : 0;
+  const topLevelBranchWidths = [
+    ...mainTreeCards.map((_, cardIndex) => getCardBranchWidth(cardIndex)),
+    ...(reviewNodes.length > 0 ? [reviewBranchWidth] : []),
+  ];
+  const topLevelContentWidth =
+    topLevelBranchWidths.reduce((sum, width) => sum + width, 0) +
+    Math.max(topLevelBranchWidths.length - 1, 0) * TREE_NODE_GAP;
+  const topLevelTreeWidth = Math.max(
+    700,
+    topLevelContentWidth,
+  );
+  const getBranchCenterX = (widths: number[], index: number) =>
+    widths.slice(0, index).reduce((sum, width) => sum + width, 0) +
+    index * TREE_NODE_GAP +
+    widths[index] / 2;
+  const getTopLevelBranchCenterX = (index: number) =>
+    (topLevelTreeWidth - topLevelContentWidth) / 2 +
+    getBranchCenterX(topLevelBranchWidths, index);
 
 
   // MAIN APP VIEW
@@ -805,6 +1387,11 @@ export default function Home() {
             onClick={() => {
               setData(null);
               setError(null);
+              setExpansions({});
+              setExpansionCache({});
+              setExpansionErrors({});
+              setExpansionLoading(null);
+              setCurrentTopicNodeId(null);
               setChatMessages([]);
               setChatInput('');
               setQuizData(null);
@@ -813,14 +1400,27 @@ export default function Home() {
               setQuizScore(null);
               setQuizAnchorIndex(null);
             }}
-            className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm"
+            className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 transition-colors text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 rounded-lg px-1"
+            aria-label="Go back to topic selection"
           >
             <ChevronLeft className="w-4 h-4" /> New Topic
           </button>
-          <div className="flex gap-2">
+          {/* AI Mode badge */}
+          <div
+            title={`AI persona: ${getActivePersona()} · Difficulty: ${difficulty}`}
+            className="hidden sm:flex items-center gap-1.5 text-[10px] bg-indigo-50 text-indigo-600 rounded-full px-2.5 py-1 font-black border border-indigo-100 cursor-default"
+            aria-label={`AI configured for ${getActivePersona()} at ${difficulty} level`}
+          >
+            <Shield className="w-3 h-3" />
+            {(useCustomPersona ? customPersona : persona).split(' ').slice(0, 2).join(' ')} · {difficulty}
+          </div>
+          <nav className="flex gap-2" aria-label="View modes" role="navigation">
             <button
               onClick={() => setViewMode('cards')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Card view"
+              aria-pressed={viewMode === 'cards'}
+              title="Card View"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'cards'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
@@ -830,7 +1430,10 @@ export default function Home() {
             </button>
             <button
               onClick={() => setViewMode('map')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Map view — all cards at a glance"
+              aria-pressed={viewMode === 'map'}
+              title="Map View"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'map'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
@@ -843,39 +1446,46 @@ export default function Home() {
                 setViewMode('tree');
                 setTreeFocusCardIndex(null);
                 setTreeSelectedBranch(null);
+                setTreeSelectedNodeId(null);
               }}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Knowledge tree view"
+              aria-pressed={viewMode === 'tree'}
+              title="Knowledge Tree"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'tree'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Knowledge Tree"
             >
               <GitBranch className="w-4 h-4" />
             </button>
             <button
               onClick={() => setViewMode('chat')}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="AI chat view"
+              aria-pressed={viewMode === 'chat'}
+              title="AI Chat"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'chat'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Chat"
             >
               <MessageSquare className="w-4 h-4" />
             </button>
             <button
               onClick={() => { setViewMode('globe'); setGlobeSelectedNode(null); }}
-              className={`px-3 py-2 rounded-lg font-bold text-sm transition ${
+              aria-label="Knowledge universe — 3D graph"
+              aria-pressed={viewMode === 'globe'}
+              title="Knowledge Universe"
+              className={`px-3 py-2 rounded-lg font-bold text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                 viewMode === 'globe'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-500 hover:bg-slate-100'
               }`}
-              title="Knowledge Universe"
             >
               <Globe className="w-4 h-4" />
             </button>
-          </div>
+          </nav>
         </div>
 
         {errorBanner}
@@ -902,6 +1512,7 @@ export default function Home() {
                     onClick={() => {
                       setTreeFocusCardIndex(null);
                       setTreeSelectedBranch(null);
+                      setTreeSelectedNodeId(null);
                     }}
                     className="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-300 transition-colors"
                   >
@@ -930,28 +1541,21 @@ export default function Home() {
 
                     <div
                       className="relative flex justify-center mb-3"
-                      style={{ height: '40px' }}
+                      style={{ width: `${topLevelTreeWidth}px`, height: '40px' }}
                     >
                       <svg
-                        width="100%"
+                        width={topLevelTreeWidth}
                         height="40"
                         className="absolute inset-0"
-                        style={{
-                          minWidth: `${
-                            Math.max((data?.cards.length || 1) * 180, 700)
-                          }px`,
-                        }}
                       >
-                        {data?.cards.map((_, i) => {
-                          const total = data.cards.length || 1;
-                          const cardWidth = 100 / total;
-                          const centerX = cardWidth * i + cardWidth / 2;
+                        {Array.from({ length: topLevelTreeCount }).map((_, i) => {
+                          const centerX = getTopLevelBranchCenterX(i);
                           return (
                             <line
                               key={i}
-                              x1="50%"
+                              x1={topLevelTreeWidth / 2}
                               y1="0"
-                              x2={`${centerX}%`}
+                              x2={centerX}
                               y2="40"
                               stroke="#cbd5e1"
                               strokeWidth="1.5"
@@ -963,35 +1567,192 @@ export default function Home() {
                     </div>
 
                     <div
-                      className="flex gap-4 justify-center mb-3"
+                      className="flex justify-center gap-[18px] mb-3 items-start"
                       style={{
-                        minWidth: `${
-                          Math.max((data?.cards.length || 1) * 180, 700)
-                        }px`,
+                        width: `${topLevelTreeWidth}px`,
                       }}
                     >
-                      {data?.cards.map((card, i) => (
-                        <button
-                          key={i}
-                          onClick={() => {
-                            setTreeFocusCardIndex(i);
-                            setTreeSelectedBranch('normal');
-                          }}
-                          className="w-[160px] min-w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md"
-                        >
-                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
-                            {i + 1}
+                      {mainTreeCards.map((card, i) => {
+                        const expansionGroups = getExpansionGroupsForCard(i);
+                        const cardBranchWidth = getCardBranchWidth(i);
+                        const groupWidths = expansionGroups.map((group) => getGroupBranchWidth(group.id));
+                        return (
+                          <div
+                            key={i}
+                            className="flex flex-col items-center"
+                            style={{ width: `${cardBranchWidth}px`, minWidth: `${cardBranchWidth}px` }}
+                          >
+                            <button
+                              onClick={() => {
+                                setTreeFocusCardIndex(i);
+                                setTreeSelectedBranch('normal');
+                                setTreeSelectedNodeId(null);
+                              }}
+                              className="w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md"
+                            >
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-slate-200 text-slate-600">
+                                {i + 1}
+                              </div>
+                              <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">
+                                {asText(card.title)}
+                              </p>
+                            </button>
+
+                            {expansionGroups.length > 0 && (
+                              <div className="w-full flex flex-col items-center">
+                                <div className="relative w-full" style={{ height: '34px' }}>
+                                  <svg width={cardBranchWidth} height="34" className="absolute inset-0">
+                                    {expansionGroups.map((_, groupIndex) => (
+                                      <line
+                                        key={groupIndex}
+                                        x1={cardBranchWidth / 2}
+                                        y1="0"
+                                        x2={getBranchCenterX(groupWidths, groupIndex)}
+                                        y2="34"
+                                        stroke="#bae6fd"
+                                        strokeWidth="1.5"
+                                      />
+                                    ))}
+                                  </svg>
+                                </div>
+                                <div className="w-full flex justify-center gap-[18px] items-start">
+                                  {expansionGroups.map((group, groupIndex) => {
+                                    const groupEdge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                                    const childNodes = getExpansionNodesForGroup(group.id);
+                                    const groupWidth = groupWidths[groupIndex];
+                                    const childWidths = childNodes.map(() => TREE_NODE_WIDTH);
+                                    return (
+                                      <div
+                                        key={group.id}
+                                        className="flex flex-col items-center"
+                                        style={{ width: `${groupWidth}px`, minWidth: `${groupWidth}px` }}
+                                      >
+                                        <button
+                                          onClick={() => {
+                                            setTreeFocusCardIndex(i);
+                                            setTreeSelectedBranch(null);
+                                            setTreeSelectedNodeId(group.id);
+                                          }}
+                                          className="w-[160px] p-2.5 rounded-xl border text-left transition-all shadow-sm border-sky-200 bg-sky-50 hover:border-sky-400 hover:bg-sky-100"
+                                        >
+                                          <p className="text-[9px] font-black text-sky-700 uppercase tracking-widest mb-1">
+                                            {groupEdge?.label || group.topic}
+                                          </p>
+                                          <p className="text-[10px] font-bold text-sky-950 leading-tight">
+                                            {group.topic}
+                                          </p>
+                                        </button>
+                                        {childNodes.length > 0 && (
+                                          <div className="w-full flex flex-col items-center">
+                                            <div className="relative w-full" style={{ height: '30px' }}>
+                                              <svg width={groupWidth} height="30" className="absolute inset-0">
+                                                {childNodes.map((_, childIndex) => (
+                                                  <line
+                                                    key={childIndex}
+                                                    x1={groupWidth / 2}
+                                                    y1="0"
+                                                    x2={getBranchCenterX(childWidths, childIndex)}
+                                                    y2="30"
+                                                    stroke="#bae6fd"
+                                                    strokeWidth="1.5"
+                                                  />
+                                                ))}
+                                              </svg>
+                                            </div>
+                                            <div className="w-full flex justify-center gap-[18px]">
+                                              {childNodes.map((node, childIndex) => (
+                                                <button
+                                                  key={node.id}
+                                                  onClick={() => {
+                                                    setTreeFocusCardIndex(i);
+                                                    setTreeSelectedBranch(null);
+                                                    setTreeSelectedNodeId(node.id);
+                                                  }}
+                                                  className="w-[160px] p-2 rounded-lg border text-left transition-all border-cyan-200 bg-white hover:border-cyan-400 hover:bg-cyan-50"
+                                                >
+                                                  <p className="text-[9px] font-black text-cyan-700 uppercase tracking-widest mb-1">
+                                                    Card {childIndex + 1}
+                                                  </p>
+                                                  <p className="text-[10px] font-bold text-cyan-950 leading-tight line-clamp-2">
+                                                    {node.topic.replace(/^[^:]+:\s*/, '')}
+                                                  </p>
+                                                </button>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <p className="text-xs font-bold text-slate-800 leading-tight line-clamp-2">
-                            {asText(card.title)}
-                          </p>
-                        </button>
-                      ))}
+                        );
+                      })}
+
+                      {reviewNodes.length > 0 && (
+                        <div
+                          className="flex flex-col items-center"
+                          style={{ width: `${reviewBranchWidth}px`, minWidth: `${reviewBranchWidth}px` }}
+                        >
+                          <div className="w-[160px] p-3 rounded-xl border-2 text-left transition-all shadow-sm border-teal-300 bg-teal-50">
+                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mb-1.5 bg-teal-200 text-teal-800">
+                              R
+                            </div>
+                            <p className="text-xs font-black text-teal-950 leading-tight">
+                              Review
+                            </p>
+                            <p className="text-[10px] text-teal-700 mt-1">
+                              Reinforcement branch
+                            </p>
+                          </div>
+
+                          <div className="w-full flex flex-col items-center">
+                            <div className="relative w-full" style={{ height: '34px' }}>
+                              <svg width={reviewBranchWidth} height="34" className="absolute inset-0">
+                                {reviewNodes.map((_, reviewIndex) => (
+                                  <line
+                                    key={reviewIndex}
+                                    x1={reviewBranchWidth / 2}
+                                    y1="0"
+                                    x2={getBranchCenterX(reviewNodes.map(() => TREE_NODE_WIDTH), reviewIndex)}
+                                    y2="34"
+                                    stroke="#99f6e4"
+                                    strokeWidth="1.5"
+                                  />
+                                ))}
+                              </svg>
+                            </div>
+                            <div className="w-full flex justify-center gap-[18px]">
+                              {reviewNodes.map((node, reviewIndex) => (
+                                <button
+                                  key={node.id}
+                                  onClick={() => {
+                                    const cardIndex = node.cardIndex ?? 7 + reviewIndex;
+                                    resetNavigation(Math.min(cardIndex, CARD_COUNT - 1));
+                                    setViewMode('cards');
+                                  }}
+                                  className="w-[160px] p-2.5 rounded-xl border text-left transition-all shadow-sm border-teal-200 bg-white hover:border-teal-400 hover:bg-teal-50"
+                                >
+                                  <p className="text-[9px] font-black text-teal-700 uppercase tracking-widest mb-1">
+                                    Review {reviewIndex + 1}
+                                  </p>
+                                  <p className="text-[10px] font-bold text-teal-950 leading-tight line-clamp-2">
+                                    {node.topic.replace(/^Review \d+:\s*/, '')}
+                                  </p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <p className="text-center text-xs text-slate-400 mt-6">
-                      Click a flashcard node to expand its explanation tree
+                      Generated refinement branches fan out under their parent cards
                     </p>
+
                   </div>
                 </div>
               ) : (
@@ -1000,7 +1761,10 @@ export default function Home() {
                   <div className="min-w-0">
                     <div className="flex justify-center mb-4">
                       <button
-                        onClick={() => setTreeSelectedBranch('normal')}
+                        onClick={() => {
+                          setTreeSelectedBranch('normal');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`px-6 py-4 rounded-2xl border-2 text-left shadow-md max-w-md w-full transition-all ${
                           treeSelectedBranch === 'normal'
                             ? 'border-indigo-600 bg-indigo-50'
@@ -1053,7 +1817,10 @@ export default function Home() {
 
                     <div className="flex justify-center gap-3 flex-wrap">
                       <button
-                        onClick={() => setTreeSelectedBranch('simpler')}
+                        onClick={() => {
+                          setTreeSelectedBranch('simpler');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'simpler'
                             ? 'bg-emerald-100 border-emerald-500 shadow-sm'
@@ -1072,7 +1839,10 @@ export default function Home() {
                       </button>
 
                       <button
-                        onClick={() => setTreeSelectedBranch('detailed')}
+                        onClick={() => {
+                          setTreeSelectedBranch('detailed');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'detailed'
                             ? 'bg-indigo-100 border-indigo-500 shadow-sm'
@@ -1091,7 +1861,10 @@ export default function Home() {
                       </button>
 
                       <button
-                        onClick={() => setTreeSelectedBranch('visual')}
+                        onClick={() => {
+                          setTreeSelectedBranch('visual');
+                          setTreeSelectedNodeId(null);
+                        }}
                         className={`w-32 p-3 rounded-xl border text-center transition-all ${
                           treeSelectedBranch === 'visual'
                             ? 'bg-amber-100 border-amber-500 shadow-sm'
@@ -1109,6 +1882,41 @@ export default function Home() {
                         </p>
                       </button>
                     </div>
+
+                    {getExpansionGroupsForCard(treeFocusCardIndex ?? 0).length > 0 && (
+                      <div className="mt-8">
+                        <p className="text-center text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">
+                          Generated Refinement Branches
+                        </p>
+                        <div className="flex justify-center gap-3 flex-wrap">
+                          {getExpansionGroupsForCard(treeFocusCardIndex ?? 0).map((group) => {
+                            const edge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                            const childCount = getExpansionNodesForGroup(group.id).length;
+                            return (
+                              <button
+                                key={group.id}
+                                onClick={() => {
+                                  setTreeSelectedNodeId(group.id);
+                                  setTreeSelectedBranch(null);
+                                }}
+                                className={`w-40 p-3 rounded-xl border text-center transition-all ${
+                                  treeSelectedNodeId === group.id
+                                    ? 'bg-sky-100 border-sky-500 shadow-sm'
+                                    : 'bg-sky-50 border-sky-200 hover:border-sky-400'
+                                }`}
+                              >
+                                <p className="text-[10px] font-black text-sky-700 uppercase tracking-wide">
+                                  {edge?.label || group.topic}
+                                </p>
+                                <p className="text-[10px] text-sky-800 mt-1">
+                                  {childCount} card{childCount !== 1 ? 's' : ''}
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Inline content panel */}
@@ -1117,6 +1925,12 @@ export default function Home() {
                       <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
                         {treeSelectedBranch === 'normal'
                           ? 'Core'
+                          : treeSelectedNodeId
+                          ? knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.type === 'review'
+                            ? 'Review'
+                            : knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.type === 'expansion_group'
+                            ? 'Refinement Branch'
+                            : 'Expansion'
                           : treeSelectedBranch === 'simpler'
                           ? 'Simplify'
                           : treeSelectedBranch === 'detailed'
@@ -1127,7 +1941,9 @@ export default function Home() {
                       </p>
                       <h3 className="text-lg font-black text-slate-800 mt-1">
                         {asText(
-                          data?.cards[treeFocusCardIndex]?.title,
+                          treeSelectedNodeId
+                            ? knowledgeGraph.nodes.find((node) => node.id === treeSelectedNodeId)?.topic
+                            : data?.cards[treeFocusCardIndex]?.title,
                         )}
                       </h3>
                     </div>
@@ -1157,27 +1973,146 @@ export default function Home() {
         {/* MAP VIEW */}
         {viewMode === 'map' && (
           <div className="grid grid-cols-1 gap-3">
-            {data?.cards.map((card, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  resetNavigation(i);
-                  setViewMode('cards');
-                }}
-                className={`p-6 bg-white rounded-2xl border-2 cursor-pointer transition-all text-left ${
-                  index === i
-                    ? 'border-indigo-600 shadow-lg'
-                    : 'border-slate-100 hover:border-indigo-200'
-                }`}
-              >
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
-                  Step {i + 1}
-                </p>
-                <p className="font-bold text-slate-800">
-                  {asText(card.title)}
-                </p>
-              </button>
-            ))}
+            {mainTreeCards.map((card, i) => {
+              const expansionGroups = getExpansionGroupsForCard(i);
+              return (
+                <div
+                  key={i}
+                  className={`p-6 bg-white rounded-2xl border-2 transition-all text-left ${
+                    index === i
+                      ? 'border-indigo-600 shadow-lg'
+                      : 'border-slate-100 hover:border-indigo-200'
+                  }`}
+                >
+                  <button
+                    onClick={() => {
+                      resetNavigation(i);
+                      setViewMode('cards');
+                    }}
+                    className="w-full flex items-start gap-4 text-left cursor-pointer"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-black shrink-0">
+                      {i + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                        Step {i + 1}
+                      </p>
+                      <p className="font-bold text-slate-800">
+                        {asText(card.title)}
+                      </p>
+                    </div>
+                  </button>
+
+                  {expansionGroups.length > 0 && (
+                    <div className="mt-4 space-y-4 border-t border-slate-100 pt-4">
+                      {expansionGroups.map((group) => {
+                        const edge = knowledgeGraph.edges.find((e) => e.target === group.id);
+                        const childNodes = getExpansionNodesForGroup(group.id);
+                        return (
+                          <div key={group.id} className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-sky-700">
+                                {edge?.label || group.topic}
+                              </span>
+                              <span className="rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-black text-sky-500">
+                                {childNodes.length}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {childNodes.map((node, childIndex) => {
+                                const isSelected = mapSelectedExpansionNodeId === node.id;
+                                return (
+                                  <button
+                                    key={node.id}
+                                    type="button"
+                                    onClick={() =>
+                                      setMapSelectedExpansionNodeId((current) =>
+                                        current === node.id ? null : node.id,
+                                      )
+                                    }
+                                    className={`cursor-pointer rounded-xl border px-3 py-2.5 text-left transition-all ${
+                                      isSelected
+                                        ? 'border-sky-500 bg-sky-50 shadow-sm ring-2 ring-sky-100'
+                                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white hover:shadow-sm'
+                                    }`}
+                                    aria-pressed={isSelected}
+                                  >
+                                    <p className={`text-[9px] font-black uppercase tracking-widest ${
+                                      isSelected ? 'text-sky-700' : 'text-slate-400'
+                                    }`}>
+                                      Sub-card {childIndex + 1}
+                                    </p>
+                                    <p className="mt-1 text-xs font-bold text-slate-700 leading-snug">
+                                      {node.topic.replace(/^[^:]+:\s*/, '')}
+                                    </p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {childNodes.map((node) =>
+                              mapSelectedExpansionNodeId === node.id ? (
+                                <div
+                                  key={`${node.id}-preview`}
+                                  className="rounded-xl border border-sky-100 bg-white px-3 py-3 text-sm text-slate-600 shadow-sm"
+                                >
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-sky-600 mb-1">
+                                    Selected Expansion
+                                  </p>
+                                  <p className="leading-relaxed">
+                                    {node.summary}
+                                  </p>
+                                </div>
+                              ) : null,
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {reviewNodes.length > 0 && (
+              <div className="mt-2 space-y-3">
+                <div className="px-2">
+                  <p className="text-xs font-black text-teal-600 uppercase tracking-widest">
+                    Review
+                  </p>
+                  <p className="text-sm font-bold text-slate-500">
+                    Reinforcement cards generated from quiz misses
+                  </p>
+                </div>
+
+                {reviewNodes.map((node, reviewIndex) => (
+                  <button
+                    key={node.id}
+                    onClick={() => {
+                      resetNavigation(Math.min(node.cardIndex ?? 7 + reviewIndex, CARD_COUNT - 1));
+                      setViewMode('cards');
+                    }}
+                    className="w-full p-6 bg-teal-50 rounded-2xl border-2 border-teal-100 cursor-pointer transition-all text-left hover:border-teal-300 hover:bg-white"
+                  >
+                    <div className="flex items-start gap-4">
+                      <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center text-xs font-black shrink-0">
+                        R{reviewIndex + 1}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-teal-600 uppercase tracking-widest mb-1">
+                          Review {reviewIndex + 1}
+                        </p>
+                        <p className="font-bold text-teal-950">
+                          {node.topic.replace(/^Review \d+:\s*/, '')}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1201,30 +2136,79 @@ export default function Home() {
                 </p>
               </div>
 
-              <div className="h-[360px] overflow-y-auto border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50">
+              <div className="h-[360px] overflow-y-auto border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50" role="log" aria-live="polite" aria-label="Chat messages">
                 {chatMessages.length === 0 && (
-                  <p className="text-sm text-slate-500">
-                    Ask a follow-up like “Can you connect card 2 and card 4?”
-                    or “Give me a simpler intuition.”
-                  </p>
+                  <div className="space-y-3">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Suggested questions</p>
+                    {suggestedQuestions.map((q, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setChatInput(q); }}
+                        className="w-full text-left px-3 py-2.5 rounded-xl border border-indigo-100 bg-white text-sm text-slate-700 hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                    <p className="text-xs text-slate-400 mt-2">Or type your own question below.</p>
+                  </div>
                 )}
 
-                {chatMessages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'ml-auto bg-indigo-600 text-white'
-                        : 'bg-white border border-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {msg.text}
-                  </div>
-                ))}
+                {chatMessages.map((msg, i) =>
+                  msg.role === 'user' ? (
+                    <div
+                      key={msg.id || i}
+                      className="max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ml-auto bg-indigo-600 text-white"
+                    >
+                      {msg.text}
+                    </div>
+                  ) : (
+                    <div
+                      key={msg.id || i}
+                      className="max-w-full rounded-3xl border border-indigo-100 bg-white shadow-sm overflow-hidden"
+                    >
+                      <div className="px-4 py-3 border-b border-indigo-50 bg-indigo-50">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3" />
+                          Answer Cards
+                        </p>
+                      </div>
+
+                      {Array.isArray(msg.cards) && msg.cards.length > 0 ? (
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {msg.cards.map((card, cardIndex) => (
+                            <div
+                              key={`${msg.id}-card-${cardIndex}`}
+                              className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                            >
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                                Card {cardIndex + 1} / {msg.cards?.length}
+                              </p>
+                              <h4 className="text-sm font-black text-slate-800 mb-2">
+                                {card.title || `Answer ${cardIndex + 1}`}
+                              </h4>
+                              <div className="prose prose-sm text-slate-700 max-w-none">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkMath]}
+                                  rehypePlugins={[rehypeKatex]}
+                                >
+                                  {card.content || 'No answer content was generated for this card.'}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="px-4 py-3 text-sm text-slate-600">
+                          {msg.text || 'No answer cards were generated.'}
+                        </div>
+                      )}
+                    </div>
+                  ),
+                )}
 
                 {chatLoading && (
                   <div className="bg-white border border-slate-200 text-slate-700 max-w-[85%] rounded-2xl px-4 py-3 text-sm">
-                    Thinking...
+                    Building answer cards...
                   </div>
                 )}
               </div>
@@ -1236,12 +2220,26 @@ export default function Home() {
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleChat()}
                   placeholder="Ask a follow-up question..."
+                  aria-label="Chat question input"
                   className="flex-1 p-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 />
                 <button
+                  onClick={handleVoiceInput}
+                  aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+                  title={isListening ? 'Listening… click to stop' : 'Voice input'}
+                  className={`px-3 py-3 rounded-xl font-black text-sm transition focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                    isListening
+                      ? 'bg-red-100 text-red-600 animate-pulse'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+                <button
                   onClick={handleChat}
                   disabled={!chatInput.trim() || chatLoading}
-                  className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 disabled:opacity-30"
+                  aria-label="Send chat message"
+                  className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   Ask
                 </button>
@@ -1290,112 +2288,109 @@ export default function Home() {
               )}
 
               <div className="min-h-[140px]">
-                {isRefining || isRegenerating ? (
-                  <div className="flex items-center gap-3 text-indigo-500 py-4">
-                    <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
-                    <p className="text-sm font-bold">
-                      {isRegenerating
-                        ? 'Generating fresh explanation...'
-                        : 'AI is tailoring content...'}
+                {view === 'normal' && (
+                  <div className="prose prose-sm text-slate-700">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {asText(currentCard.content)}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {view === 'simpler' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">
+                      Analogy
+                    </p>
+                    <p className="text-slate-600 italic text-base leading-relaxed">
+                      &ldquo;{asText(currentCard.simpler)}&rdquo;
                     </p>
                   </div>
-                ) : refinement ? (
-                  <div className="space-y-3">
-                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" /> AI Refinement
+                )}
+                {view === 'detailed' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">
+                      Deeper Explanation
                     </p>
                     <div className="prose prose-sm text-slate-700">
                       <ReactMarkdown
                         remarkPlugins={[remarkMath]}
                         rehypePlugins={[rehypeKatex]}
                       >
-                        {refinement}
+                        {asText(currentCard.detailed)}
                       </ReactMarkdown>
                     </div>
-                    <button
-                      onClick={() => setRefinement(null)}
-                      className="mt-2 text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"
-                    >
-                      <RefreshCcw className="w-3 h-3" /> Back to original
-                    </button>
                   </div>
-                ) : (
-                  <>
-                    {view === 'normal' && (
-                      <div className="prose prose-sm text-slate-700">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkMath]}
-                          rehypePlugins={[rehypeKatex]}
-                        >
-                          {asText(currentCard.content)}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {view === 'simpler' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">
-                          Analogy
-                        </p>
-                        <p className="text-slate-600 italic text-base leading-relaxed">
-                          &ldquo;{asText(currentCard.simpler)}&rdquo;
-                        </p>
-                      </div>
-                    )}
-                    {view === 'detailed' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-indigo-600 uppercase tracking-widest">
-                          Deeper Explanation
-                        </p>
-                        <div className="prose prose-sm text-slate-700">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {asText(currentCard.detailed)}
-                          </ReactMarkdown>
-                        </div>
-                      </div>
-                    )}
-                    {view === 'visual' && (
-                      <div className="space-y-2">
-                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1">
-                          <Terminal className="w-3 h-3" /> Visual / Diagram
-                        </p>
-                        <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
-                          {asText(currentCard.visual).trim() ||
-                            'No visual available for this card.'}
-                        </pre>
-                      </div>
-                    )}
-                  </>
+                )}
+                {view === 'visual' && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-amber-600 uppercase tracking-widest flex items-center gap-1">
+                      <Terminal className="w-3 h-3" /> Visual / Diagram
+                    </p>
+                    <pre className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs text-slate-700 font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                      {asText(currentCard.visual).trim() ||
+                        'No visual available for this card.'}
+                    </pre>
+                  </div>
                 )}
               </div>
 
-              {!refinement && !isRefining && !isRegenerating && (
-                <div className="space-y-3">
+              <div className="space-y-3">
                   <div className="flex items-center gap-4 flex-wrap">
                     <button
-                      onClick={() => handleRefine('simplify')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-emerald-600 transition-colors"
+                      onClick={() => handleExpansion('simplify')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'simplify'
+                          ? 'text-emerald-600'
+                          : 'text-slate-400 hover:text-emerald-600'
+                      }`}
                     >
                       <MessageSquare className="w-3 h-3" /> Simplify
                     </button>
                     <button
-                      onClick={() => handleRefine('example')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-amber-500 transition-colors"
+                      onClick={() => handleExpansion('example')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'example'
+                          ? 'text-amber-500'
+                          : 'text-slate-400 hover:text-amber-500'
+                      }`}
                     >
                       <Lightbulb className="w-3 h-3" /> Real Example
                     </button>
                     <button
-                      onClick={() => handleRefine('drill')}
-                      className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-400 hover:text-indigo-600 transition-colors"
+                      onClick={() => handleExpansion('drill')}
+                      disabled={!!activeExpansionLoading}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                        currentExpansion?.action === 'drill'
+                          ? 'text-indigo-600'
+                          : 'text-slate-400 hover:text-indigo-600'
+                      }`}
                     >
                       <BrainCircuit className="w-3 h-3" /> Drill Deeper
                     </button>
+                    <button
+                      onClick={handleReadAloud}
+                      aria-label={isReading ? 'Stop reading aloud' : 'Read card aloud'}
+                      title={isReading ? 'Stop' : 'Listen to this card'}
+                      className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors ${
+                        isReading ? 'text-emerald-600 animate-pulse' : 'text-slate-400 hover:text-emerald-500'
+                      }`}
+                    >
+                      {isReading ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                      {isReading ? 'Stop' : 'Listen'}
+                    </button>
                     <div className="ml-auto">
                       <button
-                        onClick={handleRegenerateCard}
-                        className="flex items-center gap-1.5 text-[11px] font-black uppercase text-slate-300 hover:text-red-500 transition-colors"
+                        onClick={() => handleExpansion('reexplain')}
+                        disabled={!!activeExpansionLoading}
+                        className={`flex items-center gap-1.5 text-[11px] font-black uppercase transition-colors disabled:opacity-40 ${
+                          currentExpansion?.action === 'reexplain'
+                            ? 'text-rose-600'
+                            : 'text-slate-300 hover:text-rose-500'
+                        }`}
                         title="Re-explain this card with a completely different approach"
                       >
                         <RefreshCcw className="w-3 h-3" /> Re-explain
@@ -1422,8 +2417,119 @@ export default function Home() {
                       title={currentCard?.source_anchor ? `Back to: "${currentCard.source_anchor}"` : `Open source: ${sourceUrl}`}
                     >
                       <ExternalLink className="w-3 h-3" /> Back to Source
-                    </button>
+                      </button>
                   )}
+                </div>
+
+              {activeExpansionLoading && (
+                <div className="border border-slate-200 bg-slate-50 rounded-2xl p-4 flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
+                  <p className="text-sm font-bold text-slate-600">
+                    Building {expansionLabels[activeExpansionLoading.action]} expansion cards...
+                  </p>
+                </div>
+              )}
+
+              {currentExpansionError && !activeExpansionLoading && (
+                <div className="border border-red-200 bg-red-50 rounded-2xl p-4 flex items-start justify-between gap-3">
+                  <p className="text-sm font-bold text-red-700">{currentExpansionError}</p>
+                  <button
+                    onClick={() => clearExpansionForCard(index)}
+                    className="text-xs font-black uppercase text-red-500 hover:text-red-700"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {currentExpansion && !activeExpansionLoading && (
+                <div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-200">
+                  <div className={`px-6 py-4 border-b ${expansionAccent[currentExpansion.action]}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        Expansion - {expansionLabels[currentExpansion.action]}
+                      </p>
+                      <button
+                        onClick={() => clearExpansionForCard(index)}
+                        className="text-[10px] font-black uppercase opacity-70 hover:opacity-100"
+                      >
+                        Collapse
+                      </button>
+                    </div>
+
+                  </div>
+
+                  {currentExpansion.cards.length === 0 ? (
+                    <div className="p-6">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-bold text-slate-500">
+                        No expansion content came back. Try the action again.
+                      </div>
+                    </div>
+                  ) : (() => {
+                    const miniIndex = currentExpansion.activeIndex;
+                    const miniCard = currentExpansion.cards[miniIndex];
+                    return (
+                      <>
+                        <div className="p-6 space-y-4 min-h-[180px]">
+                          <div>
+                            <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
+                              SUB-CARD {miniIndex + 1} / {currentExpansion.cards.length}
+                            </p>
+                            <h3 className="text-xl font-black text-slate-800">
+                              {miniCard.title || `${expansionLabels[currentExpansion.action]} ${miniIndex + 1}`}
+                            </h3>
+                          </div>
+                          <div className="prose prose-sm text-slate-700">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkMath]}
+                              rehypePlugins={[rehypeKatex]}
+                            >
+                              {miniCard.content || 'No detail was generated for this mini-card.'}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-100 p-4 flex items-center gap-4">
+                          <button
+                            onClick={() => moveExpansion(index, -1)}
+                            disabled={miniIndex === 0}
+                            className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+                          <div className="flex-1 flex justify-center gap-2">
+                            {currentExpansion.cards.map((_, dotIndex) => (
+                              <button
+                                key={dotIndex}
+                                onClick={() =>
+                                  setExpansions((prev) => ({
+                                    ...prev,
+                                    [index]: {
+                                      ...currentExpansion,
+                                      activeIndex: dotIndex,
+                                    },
+                                  }))
+                                }
+                                className={`h-2 rounded-full transition-all bg-indigo-400 ${
+                                  dotIndex === miniIndex
+                                    ? 'w-4 opacity-100'
+                                    : 'w-2 opacity-30 hover:opacity-70'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => moveExpansion(index, 1)}
+                            disabled={miniIndex === currentExpansion.cards.length - 1}
+                            className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                          >
+                            <ChevronRight className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -1531,14 +2637,14 @@ export default function Home() {
             )}
 
             <div className="border-t border-slate-100 p-4 space-y-4">
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5" role="tablist" aria-label="Explanation mode">
                 {(['simpler', 'normal', 'detailed', 'visual'] as const).map(
                   (v) => (
                     <button
                       key={v}
                       onClick={() => {
                         setView(v);
-                        setRefinement(null);
+                        clearExpansionForCard(index);
                       }}
                       className={`flex-1 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
                         view === v
@@ -1558,20 +2664,24 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4" role="navigation" aria-label="Card navigation">
                 <button
                   onClick={() => resetNavigation(Math.max(0, index - 1))}
                   disabled={index === 0}
-                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                  aria-label="Previous card"
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
-                <div className="flex-1 flex justify-center gap-2">
-                  {data?.cards.map((_, i) => (
+                <div className="flex-1 flex justify-center gap-2" role="tablist" aria-label="Cards">
+                  {data?.cards.map((card, i) => (
                     <button
                       key={i}
                       onClick={() => resetNavigation(i)}
-                      className={`h-2 rounded-full transition-all bg-indigo-400 ${
+                      role="tab"
+                      aria-selected={i === index}
+                      aria-label={`Card ${i + 1}: ${asText(card.title)}`}
+                      className={`h-2 rounded-full transition-all bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
                         i === index
                           ? 'w-4 opacity-100'
                           : 'w-2 opacity-30 hover:opacity-70'
@@ -1584,7 +2694,8 @@ export default function Home() {
                     resetNavigation(Math.min(CARD_COUNT - 1, index + 1))
                   }
                   disabled={index === CARD_COUNT - 1}
-                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors"
+                  aria-label="Next card"
+                  className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-slate-100 disabled:opacity-10 text-black transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -1649,7 +2760,7 @@ export default function Home() {
                     <div key={label} className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
                       <span className="text-slate-300 text-xs font-bold">{label}</span>
-                      <span className="text-slate-500 text-[10px]">— {desc}</span>
+                      <span className="text-slate-500 text-[10px]">: {desc}</span>
                     </div>
                   ))}
                 </div>
@@ -1677,7 +2788,7 @@ export default function Home() {
                         const other = topicUniverseGraph.nodes.find((n) => n.id === otherId);
                         return (
                           <div key={i} className="text-[10px] text-slate-400 border-t border-slate-600 pt-2 leading-relaxed">
-                            <span className="text-indigo-400 font-bold">{other?.topic}</span> — {e.bridge}
+                            <span className="text-indigo-400 font-bold">{other?.topic}</span>: {e.bridge}
                           </div>
                         );
                       })}
@@ -1745,6 +2856,18 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Floating chat button — visible when not already in chat/globe/tree */}
+      {data && viewMode !== 'chat' && viewMode !== 'globe' && viewMode !== 'tree' && (
+        <button
+          onClick={() => setViewMode('chat')}
+          aria-label="Open AI chat assistant"
+          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 bg-indigo-600 text-white rounded-2xl shadow-2xl px-4 py-3 hover:bg-indigo-700 active:scale-95 transition-all font-black text-sm focus:outline-none focus:ring-4 focus:ring-indigo-300"
+        >
+          <MessageSquare className="w-5 h-5" />
+          Ask AI
+        </button>
+      )}
 
       {/* Connections discovered toast */}
       {showConnectionsToast && connectionsFound > 0 && (

@@ -25,16 +25,37 @@ function extractJsonArray(text: string) {
   return cleaned.substring(start, end);
 }
 
+function escapeControlCharsInStrings(text: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  const escMap: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f' };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { result += c; escaped = false; continue; }
+    if (c === '\\' && inString) { result += c; escaped = true; continue; }
+    if (c === '"') { inString = !inString; result += c; continue; }
+    if (inString && c.charCodeAt(0) < 0x20) {
+      result += escMap[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    result += c;
+  }
+  return result;
+}
+
 function safeJsonParse(jsonText: string) {
   const cleaned = jsonText.trim();
   try {
     return JSON.parse(cleaned);
   } catch (firstError) {
     try {
-      const sanitized = cleaned
-        .replace(/[\u201C\u201D]/g, '"')
-        .replace(/[\u2018\u2019]/g, "'")
-        .replace(/,\s*([}\]])/g, '$1');
+      const sanitized = escapeControlCharsInStrings(
+        cleaned
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/,\s*([}\]])/g, '$1')
+      );
       return JSON.parse(sanitized);
     } catch {
       throw firstError;
@@ -85,6 +106,94 @@ function normalizeTopicConnections(
     .slice(0, 4);
 }
 
+type ExpansionAction = 'simplify' | 'example' | 'drill' | 'reexplain';
+type ExpansionMiniCard = {
+  title: string;
+  content: string;
+};
+
+const expansionActions = ['simplify', 'example', 'drill', 'reexplain'] as const;
+
+function isExpansionAction(value: unknown): value is ExpansionAction {
+  return (
+    typeof value === 'string' &&
+    (expansionActions as readonly string[]).includes(value)
+  );
+}
+
+type QuestionAnswerCard = {
+  title: string;
+  content: string;
+};
+
+function normalizeExpansionCards(parsed: unknown): ExpansionMiniCard[] {
+  const candidate =
+    Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object'
+      ? (parsed as { cards?: unknown; expansionCards?: unknown }).cards ??
+        (parsed as { expansionCards?: unknown }).expansionCards
+      : null;
+
+  if (!Array.isArray(candidate)) {
+    throw new Error('Expansion response did not include a cards array');
+  }
+
+  const cards = candidate
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as { title?: unknown; content?: unknown };
+      const title =
+        typeof raw.title === 'string' && raw.title.trim()
+          ? raw.title.trim()
+          : `Expansion ${index + 1}`;
+      const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+      if (!content) return null;
+      return { title, content };
+    })
+    .filter((card): card is ExpansionMiniCard => Boolean(card));
+
+  if (cards.length < 2) {
+    throw new Error('Expansion response must contain at least 2 usable mini-cards');
+  }
+
+  return cards.slice(0, 2);
+}
+
+function normalizeQuestionAnswerCards(parsed: unknown): QuestionAnswerCard[] {
+  const candidate =
+    Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object'
+      ? (parsed as { cards?: unknown; answerCards?: unknown }).cards ??
+        (parsed as { answerCards?: unknown }).answerCards
+      : null;
+
+  if (!Array.isArray(candidate)) {
+    throw new Error('Question answer response did not include a cards array');
+  }
+
+  const cards = candidate
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as { title?: unknown; content?: unknown };
+      const title =
+        typeof raw.title === 'string' && raw.title.trim()
+          ? raw.title.trim()
+          : `Answer ${index + 1}`;
+      const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+      if (!content) return null;
+      return { title, content };
+    })
+    .filter((card): card is QuestionAnswerCard => Boolean(card));
+
+  if (cards.length < 2) {
+    throw new Error('Question answer response must include at least 2 usable cards');
+  }
+
+  return cards.slice(0, 5);
+}
+
 /** Detect if the topic looks like a LeetCode / algorithm problem */
 function isCodeProblem(topic: string): boolean {
   const patterns = [
@@ -118,6 +227,8 @@ export async function POST(req: Request) {
       persona,
       difficulty,
       action,
+      expansionAction,
+      cardTitle,
       currentContent,
       context,
       weakCards,
@@ -134,25 +245,103 @@ export async function POST(req: Request) {
       mistakes         // for remediation action
     } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+
+    if (action === 'expand') {
+      const requestedExpansionAction: unknown = expansionAction;
+      if (!isExpansionAction(requestedExpansionAction)) {
+        return NextResponse.json(
+          { error: 'Invalid expansion action' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      const typedExpansionAction: ExpansionAction = requestedExpansionAction;
+
+      const actionInstructions: Record<ExpansionAction, string> = {
+        simplify:
+          'Create an easier explanation in exactly 2 mini-cards. Chunk 1 should restate the idea simply. Chunk 2 should make it feel intuitive with one plain-language analogy.',
+        drill:
+          'Create a deeper, more technical explanation in exactly 2 mini-cards. Chunk 1 should explain the mechanism or principle. Chunk 2 should explain implications, edge cases, or why it matters.',
+        example:
+          'Create exactly 2 concrete example-based mini-cards. Each mini-card should use a different vivid example that directly continues the parent card.',
+        reexplain:
+          'Create exactly 2 alternative explanation mini-cards. Each mini-card should use a different framing from the original content without changing the meaning.',
+      };
+
+      const expandPrompt = `
+You are extending one FlashLearn card with temporary local Expansion Cards.
+
+Rules:
+- Generate exactly 2 mini-cards for the selected action.
+- These are not standalone lessons. They must feel attached to the parent card.
+- Do not change the main learning path, card numbering, quiz, or remediation flow.
+- Keep each mini-card focused: title under 8 words, content 2-4 concise sentences or short markdown bullets.
+- Match the learner profile and avoid adding unsupported claims.
+
+Selected action: ${typedExpansionAction}
+Task: ${actionInstructions[typedExpansionAction]}
+
+Learner: ${about || 'General learner'}
+Persona: ${persona || 'Student'}
+Difficulty: ${difficulty || 'Medium'}
+Context: ${context || 'None'}
+Parent card title: ${cardTitle || 'Current card'}
+Parent card content:
+"""
+${currentContent || ''}
+"""
+
+Return ONLY valid JSON in this exact shape:
+{
+  "cards": [
+    { "title": "...", "content": "..." },
+    { "title": "...", "content": "..." }
+  ]
+}
+`;
+
+      const result = await model.generateContent(expandPrompt);
+      const parsed = safeJsonParse(extractJsonObject(result.response.text()));
+      const expansionCards = normalizeExpansionCards(parsed);
+      return NextResponse.json({ cards: expansionCards }, { headers: corsHeaders });
+    }
 
     // ── REFINE ACTIONS ─────────────────────────────────────────────────────────
     if (action === 'drill' || action === 'simplify' || action === 'example') {
-      let task = '';
-      if (action === 'drill') task = 'Give a deeper technical explanation. Max 5 bullet points, no fluff.';
-      if (action === 'simplify') task = 'Simplify with a cleaner analogy. Max 2 sentences.';
-      if (action === 'example') task = 'Give ONE concrete, vivid real-world example of this concept that anyone can picture. No jargon. Max 3 sentences. Start with "For example," or "Think of it like..."';
+      const legacyAction = action as ExpansionAction;
+      const task: Record<ExpansionAction, string> = {
+        simplify:
+          'Create an easier explanation in exactly 2 mini-cards: first a simple restatement, then a plain analogy.',
+        drill:
+          'Create a deeper explanation in exactly 2 mini-cards: first the mechanism, then implications or edge cases.',
+        example:
+          'Create exactly 2 concrete example-based mini-cards using two different vivid examples.',
+        reexplain:
+          'Create exactly 2 alternative explanation mini-cards using different framing from the original.',
+      };
 
       const refinePrompt = `
 Persona: ${persona}. Background: ${about}. Context: ${context || 'None'}
-Current Content: "${currentContent}"
-Task: ${task}
+Current Content:
+"""
+${currentContent || ''}
+"""
+Task: ${task[legacyAction]}
 
-Return ONLY a JSON object: {"newContent": "..."}
+Return ONLY valid JSON:
+{
+  "cards": [
+    { "title": "...", "content": "..." },
+    { "title": "...", "content": "..." }
+  ]
+}
 `;
       const result = await model.generateContent(refinePrompt);
       const parsed = safeJsonParse(extractJsonObject(result.response.text()));
-      return NextResponse.json(parsed, { headers: corsHeaders });
+      return NextResponse.json(
+        { cards: normalizeExpansionCards(parsed) },
+        { headers: corsHeaders }
+      );
     }
 
     // ── REGENERATE WEAK ────────────────────────────────────────────────────────
@@ -191,18 +380,31 @@ Return ONLY a raw JSON array:
     }
 
     // ── CHAT ───────────────────────────────────────────────────────────────────
-    if (action === 'chat') {
+    if (action === 'question_cards' || action === 'chat') {
       const historyText = (chatHistory || [])
-        .map((m: { role: string; text: string }) => `${m.role.toUpperCase()}: ${m.text}`)
+        .map((m: { role: string; text?: string; cards?: QuestionAnswerCard[] }) => {
+          if (m.text) return `${m.role.toUpperCase()}: ${m.text}`;
+          if (Array.isArray(m.cards)) {
+            const cardSummary = m.cards.map((card) => `${card.title}: ${card.content}`).join(' | ');
+            return `${m.role.toUpperCase()}: ${cardSummary}`;
+          }
+          return null;
+        })
+        .filter(Boolean)
         .join('\n');
 
       const chatPrompt = `
-You are a concise tutor grounded in the learner's current study session.
+You are creating FlashLearn answer cards for a learner's question.
 
 RULES:
 - Stay grounded in the topic summary and cards below
-- Keep answer under 120 words
+- Return 2 to 5 cards depending on answer complexity
+- Each card must contain one clear chunk of the answer
+- Order the cards logically as a mini learning flow
+- Keep each card concise and scannable: title under 8 words, content 1-3 short sentences or short markdown bullets
+- Do not write one long paragraph
 - When connecting two cards, label the link as: core concept / assumption / limitation
+- If the answer is simple, use 2 cards
 
 Learner: ${about || 'General learner'} | Persona: ${persona} | Difficulty: ${difficulty}
 Topic: ${topic} — ${topicSummary}
@@ -210,11 +412,20 @@ Cards: ${JSON.stringify(cards, null, 2)}
 Chat so far: ${historyText || 'None'}
 Question: ${question}
 
-Return ONLY: {"reply": "..."}
+Return ONLY valid JSON:
+{
+  "cards": [
+    { "title": "...", "content": "..." },
+    { "title": "...", "content": "..." }
+  ]
+}
 `;
       const result = await model.generateContent(chatPrompt);
       const parsed = safeJsonParse(extractJsonObject(result.response.text()));
-      return NextResponse.json(parsed, { headers: corsHeaders });
+      return NextResponse.json(
+        { cards: normalizeQuestionAnswerCards(parsed) },
+        { headers: corsHeaders }
+      );
     }
 
     // ── FIND CONNECTIONS (Knowledge Graph) ────────────────────────────────────
@@ -250,7 +461,7 @@ Return ONLY: {"reply": "..."}
         .join('\n');
 
       const connectionPrompt = `
-You are a knowledge graph builder. A learner just studied a new topic. Find genuine intellectual connections to their existing knowledge.
+You are a knowledge graph builder. A learner just studied a new topic. Find only the strongest, most intellectually substantive connections to their existing knowledge.
 
 New topic: "${newTopic}"
 New topic summary: "${newSummary}"
@@ -262,10 +473,18 @@ RULES:
 - Only include real intellectual connections: shared principles, mathematical links, cause-effect, historical relationship, analogous structures.
 - Skip surface-level or superficial connections.
 - Be conservative and return no connection for weak, vague, or generic topic pairs.
-- Rate strength 1–10. Only return connections with strength ≥ 4.
-- Only return connections with strength 7 or higher after your own scoring.
+- Rate strength 1–10. Only return connections with strength 7 or higher after your own scoring.
 - Return at most 4 connections.
 - "bridge" must be one precise sentence explaining HOW they connect.
+- Only include DEEP intellectual connections: shared mathematical foundations, direct cause-effect relationships, analogous computational or physical structures, overlapping formal methods, or topics that are prerequisite/successor to each other.
+- EXPLICITLY REJECT the following — they are NOT valid connections:
+  • Naming coincidences or shared vocabulary with different meanings
+  • Metaphorical parallels ("both involve networks", "both deal with flow", "both involve agents")
+  • Topics from entirely different domains (e.g., fiction vs. technical protocols, entertainment vs. engineering) unless they share a DIRECT structural or mathematical parallel — not just a vague analogy
+  • Connections justified only by "related fields" or "both are important in tech"
+- Rate connection strength 1–10 based on HOW DIRECTLY the two topics share underlying principles, equations, or mechanisms. Be conservative.
+- Only return connections with strength ≥ 7. Return an empty array if no strong connections exist — that is the correct answer when topics are truly unrelated.
+- "bridge" must name the SPECIFIC shared principle, equation, structure, or mechanism. Vague bridges like "both involve communication" or "both use graphs" are INVALID and must not be returned.
 
 Return ONLY valid JSON:
 {
@@ -273,7 +492,7 @@ Return ONLY valid JSON:
     {
       "existingTopic": "exact name from the list above",
       "strength": 8,
-      "bridge": "Both fluid dynamics and thermodynamics describe energy transfer through a medium using differential equations."
+      "bridge": "Both fluid dynamics and thermodynamics describe energy transfer through a medium using the same class of partial differential equations (conservation laws)."
     }
   ]
 }
@@ -460,7 +679,7 @@ Task: Break down "${topic}" into 7 cards.
 
 STRICT CONSTRAINTS:
 - "hook": One sentence — why this topic is fascinating or surprising. Must spark curiosity.
-- "content": Write as if explaining to a curious friend, NOT a textbook. 3 sentences max. No equations here. Start with something concrete or surprising.
+- "content": Write as if explaining to a curious friend, NOT a textbook. 4 to 5 sentences max. No equations here. Start with something concrete or surprising.
 - "simpler": One punchy, clear analogy (max 2 sentences).
 - "detailed": Maximum 5 lines of technical explanation. Bullet points. Equations welcome.
 - "visual": ASCII diagram, table, or short code snippet (max 6 lines).

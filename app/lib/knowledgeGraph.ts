@@ -1,3 +1,11 @@
+export type KnowledgeRelation =
+  | "simplify"
+  | "drill_deeper"
+  | "example"
+  | "reexplain"
+  | "review"
+  | "main";
+
 export interface KnowledgeNode {
   id: string;
   topic: string;
@@ -5,6 +13,10 @@ export interface KnowledgeNode {
   studiedAt: number;
   timesStudied: number;
   type?: "main" | "expansion_group" | "expansion" | "review_group" | "review";
+  relation?: KnowledgeRelation;
+  parentId?: string;
+  reviewGroupId?: string;
+  cardIndex?: number;
 }
 
 export interface KnowledgeEdge {
@@ -12,7 +24,8 @@ export interface KnowledgeEdge {
   target: string;
   weight: number; // 0–1
   bridge: string; // one-sentence description of the connection
-  relation?: "simplify" | "drill_deeper" | "example" | "reexplain" | "review" | "main";
+  label?: string;
+  relation?: KnowledgeRelation;
 }
 
 export interface KnowledgeGraph {
@@ -81,6 +94,56 @@ export function upsertNode(
 
   persist(graph);
   return { graph, nodeId: id };
+}
+
+export function upsertGraphNode(
+  node: Omit<KnowledgeNode, "studiedAt" | "timesStudied"> & {
+    studiedAt?: number;
+    timesStudied?: number;
+  },
+): KnowledgeGraph {
+  const graph = loadGraph();
+  const existing = graph.nodes.find((n) => n.id === node.id);
+
+  if (existing) {
+    Object.assign(existing, {
+      ...node,
+      studiedAt: node.studiedAt ?? existing.studiedAt,
+      timesStudied: Math.max(existing.timesStudied, node.timesStudied ?? 1),
+    });
+  } else {
+    graph.nodes.push({
+      ...node,
+      studiedAt: node.studiedAt ?? Date.now(),
+      timesStudied: node.timesStudied ?? 1,
+    });
+  }
+
+  persist(graph);
+  return graph;
+}
+
+export function upsertGraphEdge(edge: KnowledgeEdge): KnowledgeGraph {
+  const graph = loadGraph();
+  const existing = graph.edges.find(
+    (e) =>
+      e.source === edge.source &&
+      e.target === edge.target &&
+      (e.relation || "") === (edge.relation || "") &&
+      (e.label || "") === (edge.label || ""),
+  );
+
+  if (existing) {
+    Object.assign(existing, {
+      ...edge,
+      weight: Math.max(existing.weight, edge.weight),
+    });
+  } else {
+    graph.edges.push(edge);
+  }
+
+  persist(graph);
+  return graph;
 }
 
 export function mergeEdges(

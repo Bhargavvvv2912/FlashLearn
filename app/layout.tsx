@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FlashLearnHAI",
-  description: "Curiosity-driven adaptive learning — understand any topic through personalized AI flashcards, without the information overload.",
+  title: "FlashLearn — Learn Anything, Your Way",
+  description: "AI-powered adaptive flashcards that explain any topic at your level. Set your persona, choose your depth, and let the AI follow your lead.",
+  keywords: ["flashcards", "AI learning", "adaptive education", "human-AI interaction", "accessibility"],
 };
 
 export default function RootLayout({
@@ -13,7 +14,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <a href="#main-content" className="skip-link">Skip to main content</a>
+        <main id="main-content">{children}</main>
+      </body>
     </html>
   );
 }
